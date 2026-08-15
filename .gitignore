@@ -1,0 +1,59 @@
+# ===== 构建产物 =====
+build/
+debug/
+release/
+*.exe
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.dylib
+Makefile
+Makefile.*
+.qmake.stash
+.qtc_clangd/
+*.user
+*.pro.user*
+
+# ===== 本地工具状态 =====
+.claude/
+.rsc/
+.superpowers/
+__pycache__/
+*.pyc
+
+# ===== 文档类（仅本地保留，不上传公开仓库；2026-08-15 决策）=====
+02-DOCS/
+.dsh-dev/
+testdata/
+CLAUDE.md
+README_SETUP.md
+0323server/_ai_test/
+scripts/build_stress_test.bat
+scripts/stress_test.cpp
+scripts/stress_test_user.sql
+scripts/seed_demo_readme.md
+.vscode/
+
+# ===== Qt 生成产物 / 废弃文件 / 运行日志 =====
+*.deprecated
+object_script.*
+ui_*.h
+server.log
+*.log
+
+# ===== 环境变量 / 密钥 =====
+.env
+.env.*
+
+# ===== 非项目文件 =====
+vibecoding经验(5).pdf
+
+# ===== 运行时数据（磁盘存储由 server.conf 的 storage_path 指定）=====
+*.db
+*.sqlite
+*.sqlite3
+
+# ===== 例外：第三方运行时库入库（新机器 clone 即跑，无需再找 OpenSSL 1.1.1）=====
+!0323server/third_party/**/*.dll
