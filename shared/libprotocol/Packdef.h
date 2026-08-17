@@ -2,6 +2,7 @@
 #define PACKDEF_H
 
 #include <cstdint>
+#include <cstring>
 
 // ============================================================================
 // Packdef.h — Unified Protocol Definition for 0323 Cloud Disk
@@ -130,6 +131,7 @@ struct STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_REGISTERRQ : public STRUBASE {
     STRU_REGISTERRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_register_rq);
     }
     int64_t m_tel;                         ///< Phone number
@@ -139,6 +141,7 @@ struct STRU_REGISTERRQ : public STRUBASE {
 
 struct STRU_REGISTERRS : public STRUBASE {
     STRU_REGISTERRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_register_rs);
     }
     char m_szResult;                       ///< _register_success or _register_err
@@ -149,6 +152,7 @@ struct STRU_REGISTERRS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_LOGINRQ : public STRUBASE {
     STRU_LOGINRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_login_rq);
     }
     char m_szName[MAXSIZE];                ///< Username
@@ -157,6 +161,7 @@ struct STRU_LOGINRQ : public STRUBASE {
 
 struct STRU_LOGINRS : public STRUBASE {
     STRU_LOGINRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_login_rs);
     }
     int64_t m_userId;                      ///< User ID on success
@@ -168,6 +173,7 @@ struct STRU_LOGINRS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_GETFILELISTRQ : public STRUBASE {
     STRU_GETFILELISTRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_getfilelist_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -183,6 +189,7 @@ struct FILEINFO {
 
 struct STRU_GETFILELISTRS : public STRUBASE {
     STRU_GETFILELISTRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_getfilelist_rs);
     }
     FILEINFO m_aryFileInfo[MAXSIZE];       ///< Array of file entries (max 45)
@@ -194,6 +201,7 @@ struct STRU_GETFILELISTRS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_UPLOADFILEINFORQ : public STRUBASE {
     STRU_UPLOADFILEINFORQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_uploadfileinfo_rq);
     }
     int64_t  m_userId;                     ///< Uploading user ID
@@ -203,6 +211,7 @@ struct STRU_UPLOADFILEINFORQ : public STRUBASE {
 
 struct STRU_UPLOADFILEINFORS : public STRUBASE {
     STRU_UPLOADFILEINFORS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_uploadfileinfo_rs);
     }
     char    m_szFileName[MAXSIZE];         ///< File name echoed back
@@ -217,6 +226,7 @@ struct STRU_UPLOADFILEINFORS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_UPLOADFILEBLOCKRQ : public STRUBASE {
     STRU_UPLOADFILEBLOCKRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_uploadfileblock_rq);
     }
     int64_t m_userId;                      ///< Uploading user ID
@@ -228,6 +238,7 @@ struct STRU_UPLOADFILEBLOCKRQ : public STRUBASE {
 
 struct STRU_UPLOADFILEBLOCKRS : public STRUBASE {
     STRU_UPLOADFILEBLOCKRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_uploadfileblock_rs);
     }
     int64_t m_fileID;                      ///< File ID acknowledged
@@ -240,6 +251,7 @@ struct STRU_UPLOADFILEBLOCKRS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_DOWNLOADFILEINFORQ : public STRUBASE {
     STRU_DOWNLOADFILEINFORQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_downloadfileinfo_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -249,6 +261,7 @@ struct STRU_DOWNLOADFILEINFORQ : public STRUBASE {
 
 struct STRU_DOWNLOADFILEINFORS : public STRUBASE {
     STRU_DOWNLOADFILEINFORS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_downloadfileinfo_rs);
     }
     int64_t m_fileID;                      ///< File ID
@@ -267,6 +280,7 @@ typedef STRU_DOWNLOADFILEINFORQ STRU_DOWNLOADFILERQ;
 // ---------------------------------------------------------------------------
 struct STRU_DOWNLOADFILEBLOCKRQ : public STRUBASE {
     STRU_DOWNLOADFILEBLOCKRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_downloadfileblock_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -276,6 +290,7 @@ struct STRU_DOWNLOADFILEBLOCKRQ : public STRUBASE {
 
 struct STRU_DOWNLOADFILEBLOCKRS : public STRUBASE {
     STRU_DOWNLOADFILEBLOCKRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_downloadfileblock_rs);
     }
     int64_t m_fileID;                      ///< File ID
@@ -290,6 +305,7 @@ struct STRU_DOWNLOADFILEBLOCKRS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_SEARCHFILERQ : public STRUBASE {
     STRU_SEARCHFILERQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_searchfile_rq);
     }
     int64_t m_userId;                      ///< Searching user ID
@@ -298,6 +314,7 @@ struct STRU_SEARCHFILERQ : public STRUBASE {
 
 struct STRU_SEARCHFILERS : public STRUBASE {
     STRU_SEARCHFILERS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_searchfile_rs);
     }
     FILEINFO m_aryFileInfo[MAXSIZE];       ///< Search result file entries
@@ -309,6 +326,7 @@ struct STRU_SEARCHFILERS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_DELETEFILERQ : public STRUBASE {
     STRU_DELETEFILERQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_deletefile_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -317,6 +335,7 @@ struct STRU_DELETEFILERQ : public STRUBASE {
 
 struct STRU_DELETEFILERS : public STRUBASE {
     STRU_DELETEFILERS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_deletefile_rs);
     }
     int64_t m_fileID;                      ///< Deleted file ID
@@ -328,6 +347,7 @@ struct STRU_DELETEFILERS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_SHAREFILERQ : public STRUBASE {
     STRU_SHAREFILERQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_sharefile_rq);
     }
     int64_t m_userId;                      ///< Sharing user ID
@@ -337,6 +357,7 @@ struct STRU_SHAREFILERQ : public STRUBASE {
 
 struct STRU_SHAREFILERS : public STRUBASE {
     STRU_SHAREFILERS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_sharefile_rs);
     }
     int64_t m_fileID;                      ///< Shared file ID
@@ -349,6 +370,7 @@ struct STRU_SHAREFILERS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_DELETESHARERQ : public STRUBASE {
     STRU_DELETESHARERQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_deleteshare_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -357,6 +379,7 @@ struct STRU_DELETESHARERQ : public STRUBASE {
 
 struct STRU_DELETESHARERS : public STRUBASE {
     STRU_DELETESHARERS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_deleteshare_rs);
     }
     int64_t m_fileID;                      ///< File ID
@@ -371,6 +394,7 @@ struct STRU_DELETESHARERS : public STRUBASE {
 /// client can skip computing the full SHA-256 of the entire file.
 struct STRU_SPARSECHECKRQ : public STRUBASE {
     STRU_SPARSECHECKRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_sparsecheck_rq);
     }
     int64_t m_userId;                      ///< User ID
@@ -380,6 +404,7 @@ struct STRU_SPARSECHECKRQ : public STRUBASE {
 
 struct STRU_SPARSECHECKRS : public STRUBASE {
     STRU_SPARSECHECKRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_sparsecheck_rs);
     }
     char m_szResult;                       ///< 0 = definitely new, 1 = might exist
@@ -390,6 +415,7 @@ struct STRU_SPARSECHECKRS : public STRUBASE {
 // ---------------------------------------------------------------------------
 struct STRU_GETFILERQ : public STRUBASE {
     STRU_GETFILERQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_getfile_rq);
     }
     int64_t m_userId;                      ///< Extracting user ID
@@ -401,6 +427,7 @@ typedef STRU_GETFILERQ STRU_EXTRACTFILERQ;
 
 struct STRU_GETFILERS : public STRUBASE {
     STRU_GETFILERS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_getfile_rs);
     }
     FILEINFO m_fileInfo;                   ///< Extracted file metadata
@@ -416,6 +443,7 @@ struct STRU_GETFILERS : public STRUBASE {
 /// Request AI-powered file content preview (summary, keywords, key sentences)
 struct STRU_AIPREVIEWRQ : public STRUBASE {
     STRU_AIPREVIEWRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_aipreview_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -425,6 +453,7 @@ struct STRU_AIPREVIEWRQ : public STRUBASE {
 /// AI preview response with structured analysis
 struct STRU_AIPREVIEWRS : public STRUBASE {
     STRU_AIPREVIEWRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_aipreview_rs);
     }
     int64_t m_fileID;                      ///< File ID
@@ -446,6 +475,7 @@ struct STRU_AIPREVIEWRS : public STRUBASE {
 /// Request semantic (natural language) search over user's files
 struct STRU_AISEARCHRQ : public STRUBASE {
     STRU_AISEARCHRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_aisearch_rq);
     }
     int64_t m_userId;                      ///< Searching user ID
@@ -462,6 +492,7 @@ struct AI_SEARCH_RESULT {
 /// AI semantic search response
 struct STRU_AISEARCHRS : public STRUBASE {
     STRU_AISEARCHRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_aisearch_rs);
     }
     int             m_nResultNum;                          ///< Number of results
@@ -475,6 +506,7 @@ struct STRU_AISEARCHRS : public STRUBASE {
 /// Request AI-generated tags for a file (usually triggered after upload)
 struct STRU_AITAGRQ : public STRUBASE {
     STRU_AITAGRQ() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_aitag_rq);
     }
     int64_t m_userId;                      ///< Requesting user ID
@@ -484,6 +516,7 @@ struct STRU_AITAGRQ : public STRUBASE {
 /// AI tag response with suggested labels
 struct STRU_AITAGRS : public STRUBASE {
     STRU_AITAGRS() {
+        memset(this, 0, sizeof(*this));
         m_ntype = static_cast<char>(_default_protocol_aitag_rs);
     }
     int64_t m_fileID;                      ///< File ID
@@ -513,7 +546,7 @@ struct STRU_AITAGRS : public STRUBASE {
 
 // --- Replicate Block (peer-to-peer) ---
 struct STRU_REPLICATEBLOCKRQ : public STRUBASE {
-    STRU_REPLICATEBLOCKRQ() { m_ntype = static_cast<char>(_default_protocol_replicate_block_rq); }
+    STRU_REPLICATEBLOCKRQ() { memset(this, 0, sizeof(*this)); m_ntype = static_cast<char>(_default_protocol_replicate_block_rq); }
     int64_t m_fileId;
     int     m_blockSeq;
     int64_t m_offset;       // offset in target blocks.dat
@@ -522,7 +555,7 @@ struct STRU_REPLICATEBLOCKRQ : public STRUBASE {
 };
 
 struct STRU_REPLICATEBLOCKRS : public STRUBASE {
-    STRU_REPLICATEBLOCKRS() { m_ntype = static_cast<char>(_default_protocol_replicate_block_rs); }
+    STRU_REPLICATEBLOCKRS() { memset(this, 0, sizeof(*this)); m_ntype = static_cast<char>(_default_protocol_replicate_block_rs); }
     int64_t m_fileId;
     int     m_blockSeq;
     char    m_szResult;     // 0=fail, 1=success
@@ -530,14 +563,14 @@ struct STRU_REPLICATEBLOCKRS : public STRUBASE {
 
 // --- Stream Token Request (client → server, ask for HTTP streaming URL) ---
 struct STRU_STREAMTOKENRQ : public STRUBASE {
-    STRU_STREAMTOKENRQ() { m_ntype = static_cast<char>(_default_protocol_streamtoken_rq); }
+    STRU_STREAMTOKENRQ() { memset(this, 0, sizeof(*this)); m_ntype = static_cast<char>(_default_protocol_streamtoken_rq); }
     int64_t m_userId;      // Requesting user ID
     int64_t m_fileID;      // Target file ID to stream
 };
 
 // --- Stream Token Response (server → client, returns HTTP URL params) ---
 struct STRU_STREAMTOKENRS : public STRUBASE {
-    STRU_STREAMTOKENRS() { m_ntype = static_cast<char>(_default_protocol_streamtoken_rs); }
+    STRU_STREAMTOKENRS() { memset(this, 0, sizeof(*this)); m_ntype = static_cast<char>(_default_protocol_streamtoken_rs); }
     int64_t m_fileID;          // File ID
     char    m_szToken[65];     // SHA-256 streaming token (64 hex chars + null)
     int64_t m_nTimestamp;      // Unix timestamp when token was generated (for URL)
@@ -549,7 +582,7 @@ struct STRU_STREAMTOKENRS : public STRUBASE {
 
 // --- Redirect Response (server tells client to reconnect) ---
 struct STRU_REDIRECTRS : public STRUBASE {
-    STRU_REDIRECTRS() { m_ntype = static_cast<char>(_default_protocol_redirect_rs); }
+    STRU_REDIRECTRS() { memset(this, 0, sizeof(*this)); m_ntype = static_cast<char>(_default_protocol_redirect_rs); }
     char m_szRedirectIP[16];     // target server IP
     int  m_nRedirectPort;        // target server port
     char m_szResult;             // _redirect_permanent or _redirect_temporary

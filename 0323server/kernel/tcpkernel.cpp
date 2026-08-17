@@ -620,7 +620,7 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
 
                 // Increment reference count
                 m_sql->execute(
-                    "UPDATE files SET fcount = fcount + 1 WHERE f.f_sha256=?",
+                    "UPDATE files SET fcount = fcount + 1 WHERE files.f_sha256=?",
                     {sha256});
 
                 // Create user-file mapping
@@ -1012,8 +1012,13 @@ void tcpkernel::downloadfileinforq(SOCKET sock, const char *szbuf, int nlen)
     int64_t userId = req.m_userId;
 
     m_dbWorker.enqueue([this, sock, req, fname, userId]() {
-        // F7-2 fix: zero-initialize to avoid sending uninitialized stack memory
-        STRU_DOWNLOADFILEINFORS rs = {};
+        // F7-2 fix: zero-initialize to avoid sending uninitialized stack memory.
+        // NOTE: `= {}` does NOT zero members because this struct has a user-provided
+        // default constructor (value-init only calls that ctor, leaving fields unset),
+        // so we memset explicitly and then restore m_ntype.
+        STRU_DOWNLOADFILEINFORS rs;
+        memset(&rs, 0, sizeof(rs));
+        rs.m_ntype = static_cast<char>(_default_protocol_downloadfileinfo_rs);
         rs.m_nBlockSize = MAXFILECONTENT;
 
         // Bug #6 fix: JOIN user_file — files table has no u_id column
@@ -1229,21 +1234,19 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
             "created_at DATETIME DEFAULT NOW(),"
             "expires_at DATETIME NULL)");
 
-        // Generate cryptographically random share code with collision retry
-        // Uses std::random_device for non-deterministic 32-bit random value
-        // (falls back to time-based seed on MinGW where random_device may be deterministic)
+        // Generate a unique share code with collision retry.
+        // std::random_device is deterministic on MinGW (constant code → the 2nd
+        // share collided on the share_code PK), so use a deterministic mix of
+        // wall-clock time + fileId + a per-process monotonic counter + retry round.
+        static unsigned int s_shareSeq = 0;
         std::string shareCode;
         bool inserted = false;
         for (int retry = 0; retry < 5 && !inserted; retry++) {
-            unsigned int rnd;
-            try {
-                std::random_device rd;
-                std::mt19937 gen(rd());
-                rnd = gen();
-            } catch (...) {
-                // MinGW fallback: random_device may not be truly random
-                rnd = (unsigned int)(time(nullptr) ^ (fileId * 0x9E3779B9) ^ (retry * 0xDEADBEEF));
-            }
+            unsigned int rnd =
+                (unsigned int)(time(nullptr) * 2654435761u)
+                ^ (unsigned int)(fileId * 0x9E3779B9u)
+                ^ (++s_shareSeq)
+                ^ (unsigned int)(retry * 0xDEADBEEFu);
             char code[9];
             sprintf(code, "%08x", rnd);
             shareCode = code;
