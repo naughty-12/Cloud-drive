@@ -15,10 +15,60 @@
 #include <QVBoxLayout>
 #include <QClipboard>
 #include <QApplication>
+#include <QSettings>
+#include <QStandardPaths>
+#include <QStringList>
 #include <string.h>
 #include <cstring>
 #include "cache/UploadCache.h"
-#include "security/CryptoUtil.h"
+#include "CryptoUtil.h"          // shared/crypto 共享模块
+
+// ============================================================================
+// 播放器路径解析（跨平台，且不含任何 #ifdef）
+// ============================================================================
+// 优先级：环境变量 VLC_PATH > 用户设置(QSettings player/vlcPath)
+//         > PATH 搜索 > 各平台常见安装位置的候选列表 > 交给系统默认程序
+//
+// 候选列表在所有平台上统一尝试，靠 QFile::exists 过滤 —— 所以不需要
+// 平台条件编译：Windows 上 /usr/bin/vlc 自然不存在，Linux 上 C:\... 也不存在。
+// 找不到任何播放器时返回空串，由调用方回退到 QDesktopServices::openUrl。
+static QString resolvePreferredPlayer()
+{
+    // 1) 环境变量（临时覆盖 / 部署时指定）
+    const QByteArray env = qgetenv("VLC_PATH");
+    if (!env.isEmpty()) {
+        const QString p = QString::fromLocal8Bit(env);
+        if (QFile::exists(p)) return p;
+    }
+
+    // 2) 用户设置（可在设置界面里改；Windows 走注册表，Linux 走 ~/.config）
+    QSettings settings("0323CloudDisk", "client");
+    const QString configured = settings.value("player/vlcPath").toString();
+    if (!configured.isEmpty() && QFile::exists(configured)) return configured;
+
+    // 3) PATH 搜索（QStandardPaths 在所有平台上都是跨平台的 PATH 查找）
+    const QString inPath = QStandardPaths::findExecutable("vlc");
+    if (!inPath.isEmpty()) return inPath;
+
+    // 4) 各平台常见安装位置
+    //    注：最后一项目前是本项目开发机上的位置，作为兼容候选保留；
+    //        推荐用前两级（环境变量 / 用户设置）指定，避免依赖个人机器布局。
+    const QStringList candidates = {
+        "C:/Program Files/VideoLAN/VLC/vlc.exe",
+        "C:/Program Files (x86)/VideoLAN/VLC/vlc.exe",
+        QString(qgetenv("ProgramFiles")) + "/VideoLAN/VLC/vlc.exe",
+        "C:/学习/VLC/vlc.exe",                  // 开发机默认（可被前两级覆盖）
+        "/usr/bin/vlc",
+        "/usr/local/bin/vlc",
+        "/snap/bin/vlc",
+        "/Applications/VLC.app/Contents/MacOS/VLC"   // macOS
+    };
+    for (const QString& c : candidates) {
+        if (!c.isEmpty() && QFile::exists(c)) return c;
+    }
+
+    return QString();   // 5) 没找到 → 调用方回退系统默认播放器
+}
 
 Widget::Widget(QWidget *parent)
     : QWidget(parent)
@@ -51,28 +101,33 @@ Widget::Widget(QWidget *parent)
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_loginerrs,this,&Widget::slot_loginrs,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_getfilelistrs,this,&Widget::slot_getfilelistrs,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_uploadfileinfors,this,&Widget::slot_uploadfileinfors,Qt::BlockingQueuedConnection);
-    // Phase 2: Download, Delete, Share, Extract
+    // Phase 2：下载、删除、分享、提取
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_downloadinfors,this,&Widget::slot_downloadinfors,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_downloadblockrs,this,&Widget::slot_downloadblockrs,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_deleters,this,&Widget::slot_deleters,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_sharers,this,&Widget::slot_sharers,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_getfilers,this,&Widget::slot_getfilers,Qt::BlockingQueuedConnection);
-    // Cluster: redirect signal
+    // Cluster：重定向信号
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_redirect,this,&Widget::slot_redirect,Qt::BlockingQueuedConnection);
-    // Phase 2: HTTP streaming token signal
+    // Phase 2：HTTP 流媒体令牌信号
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_streamtoken,this,&Widget::slot_streamtoken,Qt::BlockingQueuedConnection);
-    // Phase 3: AI signals
+    // Phase 3：AI 信号
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_aipreview,this,&Widget::slot_aipreview,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_aisearch,this,&Widget::slot_aisearch,Qt::BlockingQueuedConnection);
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_aitag,this,&Widget::slot_aitag,Qt::BlockingQueuedConnection);
-    // X3 fix: block ACK tracking
+    // X3 修复：块 ACK 追踪
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_uploadfileblockrs,this,&Widget::slot_uploadfileblockrs,Qt::BlockingQueuedConnection);
-    // F10-4: share revocation
+    // F10-4：分享撤销
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_deletesharers,this,&Widget::slot_deletesharers,Qt::BlockingQueuedConnection);
-    // L2 Sparse fingerprint pre-check
+    // L2 稀疏指纹预检
     connect((tcpkernel*)m_pKernel,&tcpkernel::signal_sparsecheckrs,this,&Widget::slot_sparsecheckrs,Qt::BlockingQueuedConnection);
 
-    // Double-click table row → smart routing (media → stream, text → AI preview)
+    // Phase 3：AI 标签云（右侧面板，点击过滤文件列表）
+    m_tagCloud = new TagCloud(this);
+    m_tagCloud->setGeometry(520, 520, 264, 160);
+    connect(m_tagCloud, &TagCloud::tagClicked, this, &Widget::onTagClicked);
+
+    // 双击表格行 → 智能路由（媒体 → 流播放，文本 → AI 预览）
     connect(ui->tableWidget, &QTableWidget::cellDoubleClicked, this, [this](int row, int /*col*/) {
         QTableWidgetItem* item = ui->tableWidget->item(row, 0);
         if (!item) return;
@@ -81,7 +136,7 @@ Widget::Widget(QWidget *parent)
         QString ext = QFileInfo(fileName).suffix().toLower();
         int64_t fileId = item->data(Qt::UserRole).toLongLong();
 
-        // Media files: video, audio, images, PDF → HTTP streaming
+        // 媒体文件：视频、音频、图片、PDF → HTTP 流播放
         bool isMedia = false;
         const char* mediaExts[] = {
             "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm", "m4v", "3gp",
@@ -135,7 +190,7 @@ void Widget::slot_loginrs(const STRU_LOGINRS& psl)
         m_pKernel->sendData((char*)packet.data(), packet.size());
         return;
     }
-    // F2-2 fix: unified error message — don't distinguish "user not found" vs "wrong password"
+    // F2-2 修复：统一错误提示，不区分"用户不存在"与"密码错误"
     QMessageBox::information(this,"login","用户名或密码无效");
 }
 
@@ -190,7 +245,7 @@ void Widget::slot_uploadfileinfors(const STRU_UPLOADFILEINFORS& psu)
     switch (psu.m_szResult) {
     case _uploadfile_isuploaded:
         QMessageBox::information(this,"upload file","文件已存在（秒传）");
-        // F3-6 fix: refresh file list after upload
+        // F3-6 修复：上传后刷新文件列表
         {
             STRU_GETFILELISTRQ sg; sg.m_userId = Userid;
             m_fileListRowOffset = 0; ui->tableWidget->setRowCount(0);
@@ -199,7 +254,7 @@ void Widget::slot_uploadfileinfors(const STRU_UPLOADFILEINFORS& psu)
         }
         break;
     case _uploadfile_flash:
-        // F3-6 fix: refresh file list after instant upload
+        // F3-6 修复：秒传成功后刷新文件列表
         {
             STRU_GETFILELISTRQ sg; sg.m_userId = Userid;
             m_fileListRowOffset = 0; ui->tableWidget->setRowCount(0);
@@ -217,16 +272,16 @@ void Widget::slot_uploadfileinfors(const STRU_UPLOADFILEINFORS& psu)
             FILE*pfile=fopen(p->m_szFilePath,"rb");
             if(!pfile) { QMessageBox::warning(this,"上传","无法打开文件"); break; }
 
-            // X3 fix: track total blocks for ACK counting
+            // X3 修复：统计总块数用于 ACK 计数
             long long fileSize = p->m_filesize;
             m_uploadTotalBlocks = (int)((fileSize + MAXFILECONTENT - 1) / MAXFILECONTENT);
             m_uploadReceivedAcks = 0;
             m_uploadFileName = QString::fromUtf8(p->m_szFileName);
 
-            // F4-4 fix: use _fseeki64 for >2GB files
+            // F4-4 修复：>2GB 文件使用 _fseeki64
             if(psu.m_pos>0) {
                 _fseeki64(pfile, psu.m_pos, SEEK_SET);
-                // Adjust block seq to resume from correct position
+                // 调整块序号，从正确位置续传
                 su.m_blockSeq = (int32_t)(psu.m_pos / MAXFILECONTENT);
             }
             int seq = su.m_blockSeq;
@@ -258,11 +313,11 @@ void Widget::slot_uploadfileinfors(const STRU_UPLOADFILEINFORS& psu)
                 QMessageBox::warning(this, "上传", "无法恢复上传，文件可能已被删除");
                 break;
             }
-            // F4-4 fix: use _fseeki64 for >2GB files
+            // F4-4 修复：>2GB 文件使用 _fseeki64
             _fseeki64(pfile, psu.m_pos, SEEK_SET);
             p->m_fileid = psu.m_fileID;
 
-            // X3 fix: track blocks for resume too
+            // X3 修复：断点续传时同样统计块数
             long long remaining = p->m_filesize - psu.m_pos;
             m_uploadTotalBlocks = (int)((remaining + MAXFILECONTENT - 1) / MAXFILECONTENT);
             m_uploadReceivedAcks = 0;
@@ -291,7 +346,7 @@ void Widget::slot_uploadfileinfors(const STRU_UPLOADFILEINFORS& psu)
         break;
     }
 
-    // F3-6 fix: Clean up local tracking & refresh list
+    // F3-6 修复：清理本地追踪信息并刷新列表
     auto ite=m_lstfileinfo.begin();
     while(ite!=m_lstfileinfo.end())
     {
@@ -308,12 +363,12 @@ void Widget::slot_uploadfileinfors(const STRU_UPLOADFILEINFORS& psu)
 
 void Widget::slot_uploadfileblockrs(const STRU_UPLOADFILEBLOCKRS& rs)
 {
-    // X3 fix: count ACKs, only show "success" when all blocks confirmed
+    // X3 修复：统计 ACK 数量，全部块确认后才提示"上传成功"
     if (rs.m_szResult != 0) {
         m_uploadReceivedAcks++;
     }
     if (m_uploadTotalBlocks > 0 && m_uploadReceivedAcks >= m_uploadTotalBlocks) {
-        // F3-6 fix: refresh file list after upload complete
+        // F3-6 修复：上传完成后刷新文件列表
         STRU_GETFILELISTRQ sg; sg.m_userId = Userid;
         m_fileListRowOffset = 0; ui->tableWidget->setRowCount(0);
         auto pkt = ProtocolFactory::serializeGetFileListRQ(sg);
@@ -327,7 +382,7 @@ void Widget::slot_uploadfileblockrs(const STRU_UPLOADFILEBLOCKRS& rs)
 
 void Widget::slot_deletesharers(const STRU_DELETESHARERS& rs)
 {
-    // F10-4: share revocation response
+    // F10-4：分享撤销响应
     if (rs.m_szResult == 1) {
         QMessageBox::information(this, "撤销分享", "分享链接已撤销");
     } else {
@@ -359,11 +414,11 @@ void Widget::on_pushButton_clicked()
     int64_t mtime = fileInfo.lastModified().toSecsSinceEpoch();
 
     // ===================================================================
-    // Three-layer instant-upload funnel
+    // 三层秒传漏斗
     // ===================================================================
     std::string strSHA256;
 
-    // L1: Client SQLite cache (~70% hit, <1ms)
+    // L1：客户端 SQLite 缓存（约 70% 命中，<1ms）
     UploadCache cache;
     cache.open("./upload_cache.db");
     std::string cachedSHA = cache.lookup(filepath.toStdString(), mtime, filesize);
@@ -372,7 +427,7 @@ void Widget::on_pushButton_clicked()
         qDebug() << "[秒传 L1 HIT] SQLite cache:" << cachedSHA.c_str();
         cache.close();
 
-        // L1 hit: skip L2+L3, send UploadFileInfoRQ immediately
+        // L1 命中：跳过 L2+L3，立即发送 UploadFileInfoRQ
         qDebug()<<filesize<<strtime<<"SHA256:"<<strSHA256.c_str();
         STRU_UPLOADFILEINFORQ su;
         strncpy(su.m_fileInfo.m_szFileName,filename.toStdString().c_str(),MAXSIZE-1);
@@ -391,18 +446,18 @@ void Widget::on_pushButton_clicked()
         strncpy(p->m_szFileUploadTime,strtime.toStdString().c_str(),MAXSIZE-1);
         m_lstfileinfo.push_back(p);
     } else {
-        // L1 miss: compute sparse fingerprint for L2 pre-check
+        // L1 未命中：计算稀疏指纹用于 L2 预检
         std::string sparseFp = CryptoUtil::sparseFingerprint(filepath.toStdString());
         qDebug() << "[秒传 L2] Sparse fingerprint, querying server:" << sparseFp.c_str();
 
-        // Save context for async sparsecheck response handler
+        // 保存上下文，供异步 sparsecheck 响应处理使用
         m_pendingUploadPath = filepath;
         m_pendingUploadName = filename;
         m_pendingUploadSize = filesize;
         m_pendingUploadMtime = mtime;
         m_pendingUploadTime = strtime;
 
-        // Send sparsecheck RQ to server (L2)
+        // 向服务器发送 sparsecheck 请求（L2）
         STRU_SPARSECHECKRQ sq;
         sq.m_userId = Userid;
         sq.m_fileSize = filesize;
@@ -411,14 +466,14 @@ void Widget::on_pushButton_clicked()
         auto pkt = ProtocolFactory::serializeSparseCheckRQ(sq);
         m_pKernel->sendData((const char*)pkt.data(), pkt.size());
 
-        cache.close();  // close cache, will reopen in slot_sparsecheckrs if needed
+        cache.close();  // 关闭缓存，必要时在 slot_sparsecheckrs 中重新打开
     }
 }
 
-// ─── L2 Sparse Fingerprint Response Handler ──────────────────────────────
+// ─── L2 稀疏指纹响应处理 ──────────────────────────────────────────────
 void Widget::slot_sparsecheckrs(const STRU_SPARSECHECKRS& rs)
 {
-    if (m_pendingUploadPath.isEmpty()) return;  // safety: no pending upload
+    if (m_pendingUploadPath.isEmpty()) return;  // 安全保护：无待上传任务
 
     std::string strSHA256;
     QString filepath     = m_pendingUploadPath;
@@ -427,20 +482,20 @@ void Widget::slot_sparsecheckrs(const STRU_SPARSECHECKRS& rs)
     int64_t mtime        = m_pendingUploadMtime;
     QString strtime      = m_pendingUploadTime;
 
-    // Clear pending context
+    // 清空待处理上下文
     m_pendingUploadPath.clear();
 
     if (rs.m_szResult == 0) {
-        // Server says "definitely new" → skip full SHA-256 computation
+        // 服务器判定"肯定为新文件" → 跳过完整 SHA-256 计算
         qDebug() << "[秒传 L2] Server: definitely new, skipping full SHA-256";
-        strSHA256 = "";  // server will compute real SHA-256 during block upload
+        strSHA256 = "";  // 服务器将在块上传期间计算真实 SHA-256
     } else {
-        // Server says "might exist" → compute full SHA-256 for L3 check
+        // 服务器判定"可能存在" → 计算完整 SHA-256 供 L3 检查
         qDebug() << "[秒传 L2→L3] Server: might exist, computing full SHA-256...";
         strSHA256 = CryptoUtil::fileFingerprint(filepath.toStdString());
         qDebug() << "[秒传 L2→L3] Full SHA-256:" << strSHA256.c_str();
 
-        // Store in L1 cache for future instant upload
+        // 存入 L1 缓存，供后续秒传使用
         UploadCache cache;
         cache.open("./upload_cache.db");
         cache.store(filepath.toStdString(), mtime, filesize, strSHA256);
@@ -449,7 +504,7 @@ void Widget::slot_sparsecheckrs(const STRU_SPARSECHECKRS& rs)
 
     qDebug()<<filesize<<strtime<<"SHA256:"<<strSHA256.c_str();
 
-    // Send UploadFileInfoRQ
+    // 发送 UploadFileInfoRQ
     STRU_UPLOADFILEINFORQ su;
     strncpy(su.m_fileInfo.m_szFileName,filename.toStdString().c_str(),MAXSIZE-1);
     strncpy(su.m_fileInfo.m_szFileUploadTime,strtime.toStdString().c_str(),MAXSIZE-1);
@@ -460,7 +515,7 @@ void Widget::slot_sparsecheckrs(const STRU_SPARSECHECKRS& rs)
     auto packet = ProtocolFactory::serializeUploadFileInfoRQ(su);
     m_pKernel->sendData((const char*)packet.data(), packet.size());
 
-    // Track upload session locally
+    // 本地记录上传会话
     STRU_FILEINFO*p=new STRU_FILEINFO;
     p->m_fileid=0;
     p->m_filepos=0;
@@ -503,10 +558,10 @@ void Widget::on_pushButton_3_clicked()//删除文件
     QTableWidgetItem* item = ui->tableWidget->item(row, 0);
     if (!item) return;
 
-    // F7-3 fix: use Qt::UserRole for fileID (not m_fileID = 0)
+    // F7-3 修复：用 Qt::UserRole 存 fileID（而非 m_fileID = 0）
     long long fileID = item->data(Qt::UserRole).toLongLong();
     if (fileID == 0) {
-        // Fallback: try filename mapping
+        // 兜底：尝试按文件名映射
         QString fileName = item->text();
         auto it = m_fileIdMap.find(fileName.toStdString());
         if (it != m_fileIdMap.end()) fileID = it->second;
@@ -533,7 +588,7 @@ void Widget::on_pushButton_4_clicked()//下载文件
     QString fileName = item->text();
     m_downloadFileName = fileName;
 
-    // F7-3 fix: use Qt::UserRole for fileID
+    // F7-3 修复：用 Qt::UserRole 取 fileID
     long long fileID = item->data(Qt::UserRole).toLongLong();
 
     STRU_DOWNLOADFILEINFORQ dq;
@@ -556,7 +611,7 @@ void Widget::on_pushButton_5_clicked()//分享文件
     QTableWidgetItem* item = ui->tableWidget->item(row, 0);
     if (!item) return;
 
-    // F7-3 fix: use Qt::UserRole for fileID
+    // F7-3 修复：用 Qt::UserRole 取 fileID
     long long fileID = item->data(Qt::UserRole).toLongLong();
 
     STRU_SHAREFILERQ sq;
@@ -608,7 +663,7 @@ void Widget::on_pushButton_7_clicked()//F10-4: 撤销分享
 }
 
 // ============================================================================
-// Download slots
+// 下载槽函数
 // ============================================================================
 
 void Widget::requestDownloadBlock(int64_t pos)
@@ -634,7 +689,7 @@ void Widget::slot_downloadinfors(const STRU_DOWNLOADFILEINFORS& rs)
     m_downloadTotalBlocks = rs.m_nBlockNum;
     m_downloadBlockSize = (int)rs.m_nBlockSize;
     m_downloadReceivedBlocks = 0;
-    // X5: store expected SHA-256 for final verification
+    // X5：保存期望的 SHA-256，用于最终校验
     m_downloadExpectedSHA256 = QString::fromUtf8(rs.m_szFileSHA256, strnlen(rs.m_szFileSHA256, 65));
 
     QString savePath = QFileDialog::getSaveFileName(this, "保存文件", m_downloadFileName);
@@ -645,7 +700,7 @@ void Widget::slot_downloadinfors(const STRU_DOWNLOADFILEINFORS& rs)
         QMessageBox::critical(this, "下载", "无法创建文件");
         return;
     }
-    m_downloadSavePath = savePath;  // X5: remember save path for SHA-256 verification
+    m_downloadSavePath = savePath;  // X5：记录保存路径，用于 SHA-256 校验
 
     requestDownloadBlock(0);
 }
@@ -658,7 +713,7 @@ void Widget::slot_downloadblockrs(const STRU_DOWNLOADFILEBLOCKRS& rs)
         return;
     }
 
-    // F7-4 fix: use _fseeki64 for >2GB files
+    // F7-4 修复：>2GB 文件使用 _fseeki64
     _fseeki64(m_downloadFile, rs.m_pos, SEEK_SET);
     fwrite(rs.m_szFileContent, 1, (size_t)rs.m_fileblocksize, m_downloadFile);
 
@@ -668,11 +723,11 @@ void Widget::slot_downloadblockrs(const STRU_DOWNLOADFILEBLOCKRS& rs)
     if (nextPos < m_downloadFileSize) {
         requestDownloadBlock(nextPos);
     } else {
-        // Download complete
+        // 下载完成
         fclose(m_downloadFile);
         m_downloadFile = nullptr;
 
-        // X5 fix: SHA-256 integrity verification
+        // X5 修复：SHA-256 完整性校验
         bool hashOk = true;
         if (!m_downloadExpectedSHA256.isEmpty() && !m_downloadSavePath.isEmpty()) {
             std::string actualHash = CryptoUtil::fileFingerprint(m_downloadSavePath.toStdString());
@@ -709,13 +764,13 @@ void Widget::slot_deleters(const STRU_DELETEFILERS& rs)
 void Widget::slot_sharers(const STRU_SHAREFILERS& rs)
 {
     if (rs.m_szResult == 1) {
-        // F10-6 fix: make share code copyable
+        // F10-6 修复：分享码可复制
         QString codeText = QString("分享码: %1\n将此码发给好友即可提取文件").arg(rs.m_szShareCode);
         QMessageBox msgBox(this);
         msgBox.setWindowTitle("分享");
         msgBox.setText(codeText);
         msgBox.setStandardButtons(QMessageBox::Ok);
-        // Add copy button
+        // 添加"复制"按钮
         QPushButton* copyBtn = msgBox.addButton("复制分享码", QMessageBox::ActionRole);
         msgBox.exec();
         if (msgBox.clickedButton() == copyBtn) {
@@ -743,7 +798,7 @@ void Widget::slot_getfilers(const STRU_GETFILERS& rs)
 }
 
 // ============================================================================
-// HTTP Streaming Token Slot
+// HTTP 流媒体令牌槽函数
 // ============================================================================
 void Widget::slot_streamtoken(const STRU_STREAMTOKENRS& rs) {
     if (rs.m_szResult != 0) {
@@ -762,31 +817,34 @@ void Widget::slot_streamtoken(const STRU_STREAMTOKENRS& rs) {
 
     printf("[StreamToken] Opening URL: %s\n", url.toUtf8().constData());
 
-    const QString vlcPath("C:\\学习\\VLC\\vlc.exe");
-    if (QFile::exists(vlcPath)) {
-        printf("[StreamToken] Launching VLC: %s\n", vlcPath.toUtf8().constData());
-        qint64 pid;
-        bool ok = QProcess::startDetached(vlcPath, QStringList{url}, QString(), &pid);
-        if (ok) {
-            printf("[StreamToken] VLC launched (PID: %lld)\n", pid);
-        } else {
-            printf("[StreamToken] VLC launch failed, falling back to system default\n");
-            if (!QDesktopServices::openUrl(QUrl(url))) {
-                QMessageBox::warning(this, "Stream Error",
-                    QString("Failed to open media player.\n\nYou can manually open this URL:\n%1").arg(url));
-            }
-        }
-    } else {
-        printf("[StreamToken] VLC not found at %s, using system default\n", vlcPath.toUtf8().constData());
+    // 播放器路径来自「环境变量 > 用户设置 > PATH > 各平台常见位置」，
+    // 不再写死某一台机器上的绝对路径（见文件顶部的 resolvePreferredPlayer）
+    const QString playerPath = resolvePreferredPlayer();
+    if (playerPath.isEmpty()) {
+        printf("[StreamToken] No VLC found, using system default player\n");
         if (!QDesktopServices::openUrl(QUrl(url))) {
             QMessageBox::warning(this, "Stream Error",
                 QString("Failed to open media player.\n\nYou can manually open this URL:\n%1").arg(url));
         }
+        return;
     }
+
+    printf("[StreamToken] Launching player: %s\n", playerPath.toUtf8().constData());
+    qint64 pid = 0;
+    if (!QProcess::startDetached(playerPath, QStringList{url}, QString(), &pid)) {
+        printf("[StreamToken] Player launch failed, falling back to system default\n");
+        if (!QDesktopServices::openUrl(QUrl(url))) {
+            QMessageBox::warning(this, "Stream Error",
+                QString("Failed to open media player.\n\nYou can manually open this URL:\n%1").arg(url));
+        }
+        return;
+    }
+
+    printf("[StreamToken] Player launched (PID: %lld)\n", pid);
 }
 
 // ============================================================================
-// AI Preview Slot
+// AI 预览槽函数
 // ============================================================================
 void Widget::slot_aipreview(const STRU_AIPREVIEWRS& rs) {
     if (rs.m_szResult == 1) {
@@ -868,7 +926,7 @@ void Widget::slot_aipreview(const STRU_AIPREVIEWRS& rs) {
 }
 
 // ============================================================================
-// AI Search Slot
+// AI 搜索槽函数
 // ============================================================================
 void Widget::slot_aisearch(const STRU_AISEARCHRS& rs) {
     if (rs.m_nResultNum == 0) {
@@ -885,21 +943,43 @@ void Widget::slot_aisearch(const STRU_AISEARCHRS& rs) {
 }
 
 // ============================================================================
-// AI Tag Slot
+// AI 标签槽函数 — 标签写入标签云（替代早期 QMessageBox 弹窗）
 // ============================================================================
 void Widget::slot_aitag(const STRU_AITAGRS& rs) {
     if (rs.m_nTagNum > 0) {
-        QString tags;
+        QStringList tags;
         for (int i = 0; i < rs.m_nTagNum; i++) {
-            if (i > 0) tags += ", ";
-            tags += rs.m_szTags[i];
+            tags << QString::fromUtf8(rs.m_szTags[i]);
         }
-        QMessageBox::information(this, "AI Tags", QString("File tags: %1").arg(tags));
+        if (m_tagCloud) {
+            m_tagCloud->setFileTags(rs.m_fileID, tags);
+            // 若当前正处于某标签过滤状态，新标签到达后刷新过滤视图
+            if (!m_tagCloud->selectedTag().isEmpty())
+                onTagClicked(m_tagCloud->selectedTag());
+        }
     }
 }
 
 // ============================================================================
-// Cluster: Redirect slot — auto-reconnect to the correct node
+// 标签云点击 → 过滤文件列表（再次点击同一标签取消过滤）
+// ============================================================================
+void Widget::onTagClicked(const QString& tag)
+{
+    int rows = ui->tableWidget->rowCount();
+    for (int r = 0; r < rows; r++) {
+        QTableWidgetItem* item = ui->tableWidget->item(r, 0);
+        if (!item) {
+            ui->tableWidget->setRowHidden(r, false);
+            continue;
+        }
+        qint64 fileId = item->data(Qt::UserRole).toLongLong();
+        bool visible = tag.isEmpty() || m_tagCloud->tagsOf(fileId).contains(tag);
+        ui->tableWidget->setRowHidden(r, !visible);
+    }
+}
+
+// ============================================================================
+// Cluster：重定向槽函数 — 自动重连到正确节点
 // ============================================================================
 void Widget::slot_redirect(const STRU_REDIRECTRS& rs)
 {
@@ -925,7 +1005,7 @@ void Widget::slot_redirect(const STRU_REDIRECTRS& rs)
             return;
         }
 
-        // X2 fix: only send SHA-256 hash, not plaintext password
+        // X2 修复：只发送 SHA-256 哈希，不发送明文密码
         STRU_LOGINRQ sl;
         strncpy(sl.m_szName, username.toStdString().c_str(), MAXSIZE - 1);
         sl.m_szName[MAXSIZE - 1] = '\0';

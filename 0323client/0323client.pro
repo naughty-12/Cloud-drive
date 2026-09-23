@@ -4,10 +4,13 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++11
 
-LIBS += -lws2_32
+# 平台相关链接库（WinSock2 仅 Windows；POSIX 侧 socket 在 libc 里）
+win32: LIBS += -lws2_32
+unix:  LIBS += -lpthread
 
 INCLUDEPATH += ../shared/libprotocol
 INCLUDEPATH += ../shared/log
+INCLUDEPATH += ../shared/crypto
 
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.
@@ -16,10 +19,12 @@ INCLUDEPATH += ../shared/log
 SOURCES += \
     login1.cpp \
     main.cpp \
+    TagCloud.cpp \
     widget.cpp
 
 HEADERS += \
     login1.h \
+    TagCloud.h \
     widget.h
 
 FORMS += \
@@ -33,7 +38,7 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 
 include(./kernel/kernel.pri)
 include(./tcpclient/tcpclient.pri)
-include(./security/security.pri)
+include(../shared/crypto/crypto.pri)
 include(./cache/cache.pri)
 include(../shared/log/log.pri)
 

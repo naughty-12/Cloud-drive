@@ -9,15 +9,15 @@
 class LogManager
 {
 public:
-    /// Initialize the log system for the given application.
-    /// Creates logs/ directory if it doesn't exist and opens a dated log file:
+    /// 为指定应用程序初始化日志系统。
+    /// 若 logs/ 目录不存在则创建，并打开按日期命名的日志文件：
     ///   logs/<appName>_YYYYMMDD.log
-    /// Must be called once at startup, before any qDebug/qWarning/qCritical usage.
+    /// 必须在启动时调用一次，且先于任何 qDebug/qWarning/qCritical 的使用。
     static void init(const QString& appName);
 
 private:
-    /// Custom Qt message handler installed via qInstallMessageHandler.
-    /// Thread-safe — all writes are serialized through s_mutex.
+    /// 通过 qInstallMessageHandler 安装的自定义 Qt 消息处理函数。
+    /// 线程安全——所有写入都通过 s_mutex 串行化。
     static void messageHandler(QtMsgType type, const QMessageLogContext& ctx, const QString& msg);
 
     static QFile        s_logFile;

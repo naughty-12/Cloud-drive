@@ -3,7 +3,7 @@
 #include <string.h>
 #include <algorithm>
 
-// WinSock2 must be included before windows.h (already done via IocpContext.h)
+// WinSock2 必须先于 windows.h 包含（已通过 IocpContext.h 完成）
 
 IocpServer::IocpServer()
     : m_iocp(nullptr)
@@ -23,7 +23,7 @@ IocpServer::~IocpServer()
 
 bool IocpServer::start(const char* ip, short port, int workerCount)
 {
-    // --- WinSock init ---
+    // --- WinSock 初始化 ---
     WSADATA wsaData;
     int err = WSAStartup(MAKEWORD(2, 2), &wsaData);
     if (err != 0) {
@@ -37,7 +37,7 @@ bool IocpServer::start(const char* ip, short port, int workerCount)
         return false;
     }
 
-    // --- Create listen socket ---
+    // --- 创建监听 socket ---
     m_listenSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (m_listenSocket == INVALID_SOCKET) {
         printf("IocpServer: socket() failed, error %d\n", WSAGetLastError());
@@ -65,7 +65,7 @@ bool IocpServer::start(const char* ip, short port, int workerCount)
         return false;
     }
 
-    // --- Create IOCP ---
+    // --- 创建 IOCP ---
     m_iocp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, (DWORD)workerCount);
     if (m_iocp == nullptr) {
         printf("IocpServer: CreateIoCompletionPort failed, error %d\n", (int)GetLastError());
@@ -74,7 +74,7 @@ bool IocpServer::start(const char* ip, short port, int workerCount)
         return false;
     }
 
-    // --- Start worker threads ---
+    // --- 启动工作线程 ---
     m_workerCount = workerCount;
     m_workers = new HANDLE[m_workerCount];
     m_running = true;
@@ -84,7 +84,7 @@ bool IocpServer::start(const char* ip, short port, int workerCount)
         if (m_workers[i] == nullptr) {
             printf("IocpServer: CreateThread(worker) failed\n");
             m_running = false;
-            // Close already-created workers
+            // 关闭已创建的工作线程
             for (int j = 0; j < i; ++j) {
                 PostQueuedCompletionStatus(m_iocp, 0, 0, nullptr);
             }
@@ -101,14 +101,14 @@ bool IocpServer::start(const char* ip, short port, int workerCount)
         }
     }
 
-    // --- Start accept thread ---
+    // --- 启动 accept 线程 ---
     HANDLE hAccept = CreateThread(nullptr, 0, acceptThread, this, 0, nullptr);
     if (hAccept == nullptr) {
         printf("IocpServer: CreateThread(accept) failed\n");
         stop();
         return false;
     }
-    CloseHandle(hAccept);  // we don't need to join it; stop() handles cleanup
+    CloseHandle(hAccept);  // 无需 join 该线程；stop() 负责清理
 
     printf("IocpServer: started on %s:%d with %d workers\n", ip, (int)port, m_workerCount);
     return true;
@@ -121,14 +121,14 @@ void IocpServer::stop()
 
     m_running = false;
 
-    // Close listen socket to stop accepting
+    // 关闭监听 socket，停止接受新连接
     if (m_listenSocket != INVALID_SOCKET) {
         closesocket(m_listenSocket);
         m_listenSocket = INVALID_SOCKET;
     }
 
-    // Close all client sockets (marks contexts as disconnected so
-    // handleDisconnect becomes a no-op when error completions arrive)
+    // 关闭所有客户端 socket（将上下文标记为已断开，
+    // 使错误完成到达时 handleDisconnect 变为空操作）
     EnterCriticalSection(&m_ctxLock);
     for (auto& pair : m_contexts) {
         IocpContext* ctx = pair.second;
@@ -138,13 +138,13 @@ void IocpServer::stop()
     }
     LeaveCriticalSection(&m_ctxLock);
 
-    // Wake up worker threads
+    // 唤醒工作线程
     if (m_iocp != nullptr && m_workers != nullptr) {
         for (int i = 0; i < m_workerCount; ++i) {
             PostQueuedCompletionStatus(m_iocp, 0, 0, nullptr);
         }
 
-        // Wait for workers to exit
+        // 等待工作线程退出
         WaitForMultipleObjects(m_workerCount, m_workers, TRUE, 5000);
 
         for (int i = 0; i < m_workerCount; ++i) {
@@ -152,8 +152,8 @@ void IocpServer::stop()
         }
     }
 
-    // Clean up remaining contexts (those not already deleted by handleDisconnect
-    // during normal operation)
+    // 清理剩余上下文（正常运行时未被 handleDisconnect
+    // 删除的那些）
     EnterCriticalSection(&m_ctxLock);
     for (auto& pair : m_contexts) {
         delete pair.second;
@@ -161,13 +161,13 @@ void IocpServer::stop()
     m_contexts.clear();
     LeaveCriticalSection(&m_ctxLock);
 
-    // Clean up IOCP
+    // 清理 IOCP
     if (m_iocp != nullptr) {
         CloseHandle(m_iocp);
         m_iocp = nullptr;
     }
 
-    // Clean up workers array
+    // 清理工作线程数组
     if (m_workers != nullptr) {
         delete[] m_workers;
         m_workers = nullptr;
@@ -187,7 +187,7 @@ DWORD WINAPI IocpServer::acceptThread(LPVOID param)
 
         SOCKET clientSock = accept(self->m_listenSocket, (sockaddr*)&addrClient, &addrLen);
         if (clientSock == INVALID_SOCKET) {
-            // Socket closed (stop called) or error
+            // socket 已关闭（调用了 stop）或发生错误
             if (self->m_running) {
                 printf("IocpServer: accept() failed, error %d\n", WSAGetLastError());
             }
@@ -197,15 +197,15 @@ DWORD WINAPI IocpServer::acceptThread(LPVOID param)
         printf("IocpServer: client connected from %s:%d\n",
                inet_ntoa(addrClient.sin_addr), ntohs(addrClient.sin_port));
 
-        // Create context
+        // 创建上下文
         IocpContext* ctx = new IocpContext(clientSock, addrClient);
 
-        // Store in context map
+        // 存入上下文表
         EnterCriticalSection(&self->m_ctxLock);
         self->m_contexts[clientSock] = ctx;
         LeaveCriticalSection(&self->m_ctxLock);
 
-        // Associate with IOCP
+        // 与 IOCP 关联
         if (CreateIoCompletionPort((HANDLE)clientSock, self->m_iocp,
                                    (ULONG_PTR)ctx, 0) == nullptr) {
             printf("IocpServer: CreateIoCompletionPort(client) failed, error %d\n",
@@ -214,7 +214,7 @@ DWORD WINAPI IocpServer::acceptThread(LPVOID param)
             continue;
         }
 
-        // Post first receive
+        // 发起首次接收
         IoOverlapped* ov = new IoOverlapped;
         memset(&ov->overlapped, 0, sizeof(ov->overlapped));
         ov->opType = IoOpType::Recv;
@@ -249,23 +249,23 @@ DWORD WINAPI IocpServer::workerThread(LPVOID param)
         BOOL ok = GetQueuedCompletionStatus(self->m_iocp, &bytesTransferred,
                                             &completionKey, &pOverlapped, INFINITE);
 
-        // Stop signal: PostQueuedCompletionStatus(nullptr, 0, 0, nullptr)
+        // 停止信号：PostQueuedCompletionStatus(nullptr, 0, 0, nullptr)
         if (completionKey == 0 && pOverlapped == nullptr) {
             break;
         }
 
-        // Extract our context and overlapped
+        // 取出上下文与 overlapped
         IocpContext* ctx = (IocpContext*)completionKey;
         IoOverlapped* ov = CONTAINING_RECORD(pOverlapped, IoOverlapped, overlapped);
 
-        // Check for client disconnect or error
+        // 检查客户端断开或错误
         if (!ok || bytesTransferred == 0) {
             delete ov;
             self->handleDisconnect(ctx);
             continue;
         }
 
-        // Dispatch by operation type
+        // 按操作类型分发
         switch (ov->opType) {
         case IoOpType::Recv:
             self->handleRecv(ctx, ov, bytesTransferred);
@@ -281,13 +281,13 @@ DWORD WINAPI IocpServer::workerThread(LPVOID param)
 
 void IocpServer::handleRecv(IocpContext* ctx, IoOverlapped* ov, DWORD bytesTransferred)
 {
-    // Append received data to context buffer
+    // 将收到的数据追加到上下文缓冲区
     const char* data = ov->buffer;
     int remaining = (int)bytesTransferred;
 
     while (remaining > 0) {
         if (ctx->readingHeader) {
-            // We need 4 bytes for header; ctx->recvBuffer holds partial header bytes
+            // 头部需 4 字节；ctx->recvBuffer 暂存不完整的头部字节
             int headerNeeded = 4 - (int)ctx->recvBuffer.size();
             int toCopy = (remaining < headerNeeded) ? remaining : headerNeeded;
 
@@ -296,14 +296,14 @@ void IocpServer::handleRecv(IocpContext* ctx, IoOverlapped* ov, DWORD bytesTrans
             remaining -= toCopy;
 
             if ((int)ctx->recvBuffer.size() == 4) {
-                // Extract big-endian length
+                // 提取大端长度
                 int32_t netLen = 0;
                 memcpy(&netLen, &ctx->recvBuffer[0], 4);
                 ctx->expectedLen = (int)ntohl(netLen);
                 ctx->recvBuffer.clear();
                 ctx->readingHeader = false;
 
-                // Cap at a reasonable maximum (1 MB) to prevent runaway allocation
+                // 限制在合理上限（1 MB）内，防止无界分配
                 if (ctx->expectedLen <= 0 || ctx->expectedLen > 1048576) {
                     printf("IocpServer: invalid packet length %d, disconnecting\n",
                            ctx->expectedLen);
@@ -313,7 +313,7 @@ void IocpServer::handleRecv(IocpContext* ctx, IoOverlapped* ov, DWORD bytesTrans
                 }
             }
         } else {
-            // We are reading the payload body
+            // 正在读取载荷正文
             int bodyNeeded = ctx->expectedLen - (int)ctx->recvBuffer.size();
             int toCopy = (remaining < bodyNeeded) ? remaining : bodyNeeded;
 
@@ -322,14 +322,14 @@ void IocpServer::handleRecv(IocpContext* ctx, IoOverlapped* ov, DWORD bytesTrans
             remaining -= toCopy;
 
             if ((int)ctx->recvBuffer.size() == ctx->expectedLen) {
-                // Complete packet received
+                // 已收到完整数据包
                 parsePacket(ctx, &ctx->recvBuffer[0], ctx->expectedLen);
                 ctx->resetRecv();
             }
         }
     }
 
-    // Post next WSARecv reusing the same IoOverlapped
+    // 复用同一 IoOverlapped 发起下一次 WSARecv
     memset(&ov->overlapped, 0, sizeof(ov->overlapped));
     ov->wsabuf.buf = ov->buffer;
     ov->wsabuf.len = sizeof(ov->buffer);
@@ -350,7 +350,7 @@ void IocpServer::handleSend(IocpContext* ctx, IoOverlapped* ov, DWORD /*bytesTra
 {
     delete ov;
 
-    // Process next frame in send queue
+    // 处理发送队列中的下一帧
     EnterCriticalSection(&ctx->sendLock);
 
     if (ctx->sendQueue.empty()) {
@@ -363,7 +363,7 @@ void IocpServer::handleSend(IocpContext* ctx, IoOverlapped* ov, DWORD /*bytesTra
     ctx->sendQueue.erase(ctx->sendQueue.begin());
     LeaveCriticalSection(&ctx->sendLock);
 
-    // Create new overlapped for this send
+    // 为本次发送创建新的 overlapped
     IoOverlapped* newOv = new IoOverlapped;
     memset(&newOv->overlapped, 0, sizeof(newOv->overlapped));
     newOv->opType = IoOpType::Send;
@@ -373,7 +373,7 @@ void IocpServer::handleSend(IocpContext* ctx, IoOverlapped* ov, DWORD /*bytesTra
     newOv->wsabuf.buf = newOv->buffer;
     newOv->wsabuf.len = toSend;
 
-    // If frame is too large for a single buffer, queue the remainder
+    // 若帧超出单个缓冲区大小，将剩余部分重新入队
     if ((int)frame.size() > (int)sizeof(newOv->buffer)) {
         EnterCriticalSection(&ctx->sendLock);
         std::vector<char> remainder(frame.begin() + sizeof(newOv->buffer), frame.end());
@@ -397,14 +397,14 @@ bool IocpServer::sendData(SOCKET sock, const char* data, int len)
     if (sock == INVALID_SOCKET || data == nullptr || len <= 0)
         return false;
 
-    // Build complete frame: [4-byte big-endian payload length][payload]
+    // 构造完整帧：[4 字节大端载荷长度][载荷]
     int totalLen = 4 + len;
     std::vector<char> frame(totalLen);
     int32_t netLen = htonl(len);
     memcpy(&frame[0], &netLen, 4);
     memcpy(&frame[4], data, len);
 
-    // Find context
+    // 查找上下文
     EnterCriticalSection(&m_ctxLock);
     auto it = m_contexts.find(sock);
     if (it == m_contexts.end()) {
@@ -414,7 +414,7 @@ bool IocpServer::sendData(SOCKET sock, const char* data, int len)
     IocpContext* ctx = it->second;
     LeaveCriticalSection(&m_ctxLock);
 
-    // Check if a send is already in progress
+    // 检查是否已有发送正在进行
     EnterCriticalSection(&ctx->sendLock);
     if (ctx->sendInProgress) {
         ctx->sendQueue.push_back(std::move(frame));
@@ -424,7 +424,7 @@ bool IocpServer::sendData(SOCKET sock, const char* data, int len)
     ctx->sendInProgress = true;
     LeaveCriticalSection(&ctx->sendLock);
 
-    // Send immediately
+    // 立即发送
     IoOverlapped* ov = new IoOverlapped;
     memset(&ov->overlapped, 0, sizeof(ov->overlapped));
     ov->opType = IoOpType::Send;
@@ -434,7 +434,7 @@ bool IocpServer::sendData(SOCKET sock, const char* data, int len)
     ov->wsabuf.buf = ov->buffer;
     ov->wsabuf.len = toSend;
 
-    // If frame doesn't fit in one buffer, queue remainder
+    // 若帧无法放入单个缓冲区，将剩余部分入队
     if ((int)frame.size() > (int)sizeof(ov->buffer)) {
         EnterCriticalSection(&ctx->sendLock);
         std::vector<char> remainder(frame.begin() + sizeof(ov->buffer), frame.end());
@@ -448,7 +448,7 @@ bool IocpServer::sendData(SOCKET sock, const char* data, int len)
         if (err != WSA_IO_PENDING) {
             delete ov;
 
-            // Reset send state and flush queue
+            // 重置发送状态并清空队列
             EnterCriticalSection(&ctx->sendLock);
             ctx->sendInProgress = false;
             ctx->sendQueue.clear();
@@ -483,7 +483,7 @@ void IocpServer::handleDisconnect(IocpContext* ctx)
         m_disconnectCallback(ctx->socket);
     }
 
-    // Remove from context map
+    // 从上下文表中移除
     EnterCriticalSection(&m_ctxLock);
     m_contexts.erase(ctx->socket);
     LeaveCriticalSection(&m_ctxLock);
@@ -498,7 +498,7 @@ void IocpServer::handleDisconnect(IocpContext* ctx)
 
 void IocpServer::disconnectClient(SOCKET sock)
 {
-    // Thread-safe lookup + disconnect for external callers (e.g., dealData exception handler)
+    // 为外部调用者（如 dealData 异常处理器）提供线程安全的查找与断开
     EnterCriticalSection(&m_ctxLock);
     auto it = m_contexts.find(sock);
     IocpContext* ctx = (it != m_contexts.end()) ? it->second : nullptr;

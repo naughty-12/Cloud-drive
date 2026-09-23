@@ -17,7 +17,7 @@ FileStorage::~FileStorage() {
 
 bool FileStorage::init(const std::string& basePath) {
     m_basePath = basePath;
-    // Ensure trailing backslash
+    // 确保以反斜杠结尾
     if (!m_basePath.empty() && m_basePath.back() != '\\') {
         m_basePath += '\\';
     }
@@ -25,19 +25,19 @@ bool FileStorage::init(const std::string& basePath) {
     m_blocksPath = m_basePath + "blocks.dat";
     m_indexPath  = m_basePath + "blocks.idx";
 
-    // Create base directory (CreateDirectoryA is idempotent if dir exists)
+    // 创建基础目录（目录已存在时 CreateDirectoryA 是幂等的）
     CreateDirectoryA(m_basePath.c_str(), NULL);
 
-    // Create temp directory
+    // 创建临时目录
     std::string tempDir = m_basePath + "temp\\";
     CreateDirectoryA(tempDir.c_str(), NULL);
 
-    // Open blocks.dat in append+write mode.
-    // If the file doesn't exist, first create it.
+    // 以追加+写入模式打开 blocks.dat。
+    // 若文件不存在，先创建它。
     struct stat st;
     bool exists = (stat(m_blocksPath.c_str(), &st) == 0);
     if (!exists) {
-        // Create the file
+        // 创建文件
         std::ofstream create(m_blocksPath, std::ios::binary);
         create.close();
     }
@@ -47,7 +47,7 @@ bool FileStorage::init(const std::string& basePath) {
         return false;
     }
 
-    // Load existing index and compute total size
+    // 加载已有索引并计算总大小
     auto blocks = readAllIndex();
     m_totalSize = 0;
     for (const auto& b : blocks) {
@@ -59,7 +59,7 @@ bool FileStorage::init(const std::string& basePath) {
 }
 
 void FileStorage::writeIndexEntry(int64_t fileId, int blockSeq, int64_t offset, int length) {
-    // Open index file in append mode to add one line
+    // 以追加模式打开索引文件以添加一行
     std::ofstream idx(m_indexPath, std::ios::app);
     if (idx.is_open()) {
         idx << fileId << "," << blockSeq << "," << offset << "," << length << "\n";
@@ -74,7 +74,7 @@ std::vector<BlockInfo> FileStorage::readAllIndex() {
 
     std::string line;
     while (std::getline(idx, line)) {
-        // Skip empty lines and deleted entries (prefixed with #)
+        // 跳过空行与已删除条目（以 # 开头）
         if (line.empty() || line[0] == '#') continue;
 
         BlockInfo info;
@@ -93,29 +93,29 @@ int64_t FileStorage::writeBlock(int64_t fileId, int blockSeq, const char* data, 
 
     if (len <= 0) return -1;
 
-    // F16-4 fix: idempotency — if this (fileId, blockSeq) already written, return existing offset
+    // F16-4 修复：幂等性——若 (fileId, blockSeq) 已写入，直接返回已有偏移
     {
         auto blocks = readAllIndex();
         for (const auto& b : blocks) {
             if (b.fileId == fileId && b.blockSeq == blockSeq) {
-                return b.offset;  // already exists — no duplicate write
+                return b.offset;  // 已存在——不重复写入
             }
         }
     }
 
-    // Seek to end of blocks.dat to get current write offset.
-    // In append mode, seekp(0, end) + tellp() gives the end position before writing.
+    // 定位到 blocks.dat 末尾以获取当前写入偏移。
+    // 追加模式下，seekp(0, end) + tellp() 得到写入前的位置。
     m_blocksStream.seekp(0, std::ios::end);
     int64_t offset = m_blocksStream.tellp();
 
-    // Write data
+    // 写入数据
     m_blocksStream.write(data, len);
     m_blocksStream.flush();
 
-    // Record index entry
+    // 记录索引条目
     writeIndexEntry(fileId, blockSeq, offset, len);
 
-    // Update total size
+    // 更新总大小
     m_totalSize = offset + len;
 
     return offset;
@@ -127,7 +127,7 @@ std::string FileStorage::readBlock(int64_t fileId, int blockSeq) {
     auto blocks = readAllIndex();
     for (const auto& b : blocks) {
         if (b.fileId == fileId && b.blockSeq == blockSeq) {
-            // Open a separate read-only stream for the data
+            // 为数据打开独立的只读流
             std::ifstream blocksFile(m_blocksPath, std::ios::binary);
             if (!blocksFile.is_open()) return "";
 
@@ -152,7 +152,7 @@ std::vector<BlockInfo> FileStorage::getFileBlocks(int64_t fileId) {
             result.push_back(b);
         }
     }
-    // Sort by block sequence number
+    // 按块序号排序
     std::sort(result.begin(), result.end(),
         [](const BlockInfo& a, const BlockInfo& b) {
             return a.blockSeq < b.blockSeq;
@@ -177,7 +177,7 @@ std::string FileStorage::readRange(int64_t fileId, int64_t offset, int length) {
 
     if (length <= 0 || offset < 0) return "";
 
-    // Get sorted blocks for this file
+    // 获取该文件的已排序块
     auto allBlocks = readAllIndex();
     std::vector<BlockInfo> blocks;
     for (const auto& b : allBlocks) {
@@ -185,7 +185,7 @@ std::string FileStorage::readRange(int64_t fileId, int64_t offset, int length) {
             blocks.push_back(b);
         }
     }
-    // Sort by block sequence number
+    // 按块序号排序
     std::sort(blocks.begin(), blocks.end(),
         [](const BlockInfo& a, const BlockInfo& b) {
             return a.blockSeq < b.blockSeq;
@@ -193,35 +193,35 @@ std::string FileStorage::readRange(int64_t fileId, int64_t offset, int length) {
 
     if (blocks.empty()) return "";
 
-    // Open blocks.dat for reading
+    // 打开 blocks.dat 用于读取
     std::ifstream blocksFile(m_blocksPath, std::ios::binary);
     if (!blocksFile.is_open()) return "";
 
     std::string result;
     int64_t bytesRemaining = length;
-    int64_t currentOffset = 0;  // current position in the logical file
+    int64_t currentOffset = 0;  // 逻辑文件中的当前位置
 
     for (const auto& block : blocks) {
         int64_t blockStart = currentOffset;
         int64_t blockEnd = currentOffset + block.length;
 
-        // Skip blocks before the requested range
+        // 跳过请求区间之前的块
         if (blockEnd <= offset) {
             currentOffset = blockEnd;
             continue;
         }
 
-        // Stop if we've passed the requested range
+        // 已越过请求区间则停止
         if (blockStart >= offset + length) {
             break;
         }
 
-        // Calculate overlap between [blockStart, blockEnd) and [offset, offset+length)
+        // 计算 [blockStart, blockEnd) 与 [offset, offset+length) 的重叠部分
         int64_t readStart = (std::max)(blockStart, offset);
         int64_t readEnd = (std::min)(blockEnd, offset + length);
         int readLen = (int)(readEnd - readStart);
 
-        // Seek to the right position within this block in blocks.dat
+        // 在 blocks.dat 中定位到该块内的正确位置
         int64_t blockOffset = block.offset + (readStart - blockStart);
         blocksFile.seekg(blockOffset, std::ios::beg);
         if (!blocksFile.good()) {
@@ -245,7 +245,7 @@ std::string FileStorage::readRange(int64_t fileId, int64_t offset, int length) {
 void FileStorage::deleteFile(int64_t fileId) {
     std::lock_guard<std::mutex> lock(m_mutex);
 
-    // Read all lines from the index file
+    // 读取索引文件的全部行
     std::ifstream idxIn(m_indexPath);
     if (!idxIn.is_open()) return;
 
@@ -256,25 +256,25 @@ void FileStorage::deleteFile(int64_t fileId) {
     }
     idxIn.close();
 
-    // Rewrite the index file, prefixing matching entries with '#'
+    // 重写索引文件，将匹配条目加上 '#' 前缀
     std::ofstream idxOut(m_indexPath, std::ios::trunc);
     if (!idxOut.is_open()) return;
 
     for (const auto& l : lines) {
-        // Keep already-deleted entries as-is
+        // 已删除的条目原样保留
         if (l.empty() || l[0] == '#') {
             idxOut << l << "\n";
             continue;
         }
 
-        // Parse first field (file_id) from "file_id,block_seq,..."
+        // 从 "file_id,block_seq,..." 解析第一个字段（file_id）
         std::istringstream iss(l);
         int64_t fid;
         char comma;
         iss >> fid >> comma;
 
         if (!iss.fail() && fid == fileId) {
-            // Mark as deleted by prefixing with #
+            // 通过加 # 前缀标记为已删除
             idxOut << "#" << l << "\n";
         } else {
             idxOut << l << "\n";
@@ -298,7 +298,7 @@ std::string FileStorage::createTempFile(int64_t fileId) {
 std::vector<BlockInfo> FileStorage::commitTempFile(int64_t fileId, const std::string& tempPath) {
     std::vector<BlockInfo> result;
 
-    // Read the entire temp file into memory
+    // 将整个临时文件读入内存
     std::ifstream tempFile(tempPath, std::ios::binary | std::ios::ate);
     if (!tempFile.is_open()) return result;
 
@@ -314,7 +314,7 @@ std::vector<BlockInfo> FileStorage::commitTempFile(int64_t fileId, const std::st
     tempFile.read(fileData.data(), fileSize);
     tempFile.close();
 
-    // Split into blocks and write each via writeBlock
+    // 分块并通过 writeBlock 逐块写入
     const int BLOCK_SIZE = 4096;
     int blockSeq = 0;
     int64_t totalWritten = 0;
@@ -336,7 +336,7 @@ std::vector<BlockInfo> FileStorage::commitTempFile(int64_t fileId, const std::st
         blockSeq++;
     }
 
-    // Clean up temp file
+    // 清理临时文件
     remove(tempPath.c_str());
 
     return result;

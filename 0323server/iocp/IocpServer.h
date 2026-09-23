@@ -3,16 +3,16 @@
 
 /**
  * @file IocpServer.h
- * @brief Windows IOCP (I/O Completion Port) asynchronous TCP server.
+ * @brief Windows IOCP（I/O 完成端口）异步 TCP 服务器。
  *
- * Replaces the legacy thread-per-client TCPServer model.
- * Architecture: 1 accept thread + N worker threads (configurable, default 4).
- * Each connection gets a per-I/O context (IocpContext) tracking recv state
- * and send queue.  Protocol parsing uses 4-byte big-endian length prefix
- * followed by BinaryStream-serialized payload.
+ * 取代旧的一连接一线程的 TCPServer 模型。
+ * 架构：1 个 accept 线程 + N 个工作线程（可配置，默认 4 个）。
+ * 每个连接对应一个 I/O 上下文（IocpContext），跟踪接收状态
+ * 与发送队列。协议解析使用 4 字节大端长度前缀，
+ * 后跟 BinaryStream 序列化的载荷。
  *
- * Thread safety: CRITICAL_SECTION on context map (m_ctxLock) and per-connection
- * send queue (ctx->sendLock).  handleDisconnect is idempotent.
+ * 线程安全：上下文表（m_ctxLock）与每连接发送队列（ctx->sendLock）
+ * 均使用 CRITICAL_SECTION 保护；handleDisconnect 为幂等操作。
  */
 
 #include <winsock2.h>
@@ -36,7 +36,7 @@ public:
     bool start(const char* ip = "127.0.0.1", short port = 8899, int workerCount = 4);
     void stop();
     bool sendData(SOCKET sock, const char* data, int len);
-    void disconnectClient(SOCKET sock);  // Force-disconnect a specific client (used by dealData exception handler)
+    void disconnectClient(SOCKET sock);  // 强制断开指定客户端（供 dealData 异常处理器使用）
 
 private:
     static DWORD WINAPI acceptThread(LPVOID param);

@@ -25,15 +25,15 @@ struct ReplicationTask {
 
 class ReplicationWorker {
 public:
-    // Same pattern as DbWorker: independent thread + task queue + mutex + cv
+    // 与 DbWorker 相同模式：独立线程 + 任务队列 + 互斥锁 + 条件变量
     ReplicationWorker() = default;
     ~ReplicationWorker() { stop(); }
 
     void start(NodeManager* nodeMgr);
     void stop();
 
-    // Enqueue a replication task. Returns false if queue is full (peer unreachable).
-    // Task data is copied — safe to destroy the source after enqueue returns.
+    // 入队一个复制任务。队列满时返回 false（对端不可达）。
+    // 任务数据会被拷贝——入队返回后即可安全销毁源数据。
     bool enqueue(ReplicationTask task);
 
 private:
@@ -48,14 +48,14 @@ private:
     std::thread      m_thread;
     std::atomic<bool> m_running{false};
 
-    // Queue size limit — prevents unbounded memory growth when peer is offline.
-    // 100 tasks × 1MB avg = 100MB max. Beyond this, new tasks are dropped
-    // with a warning (peer is unreachable anyway; catch-up via future reconciliation).
+    // 队列大小上限——防止对端离线时内存无限增长。
+    // 100 个任务 × 平均 1MB = 最多 100MB。超出后新任务被丢弃
+    // 并告警（对端本就不可达；后续通过未来对账机制补齐）。
     enum { MAX_QUEUE_SIZE = 100 };
 
-    // Retry: 3 attempts with 1s interval. Total = 3s max delay.
-    // 1s is enough for transient network flaps; 3s total means if peer hasn't
-    // recovered by then, it likely won't until heartbeat reconnects (5s cycle).
+    // 重试：3 次尝试，间隔 1s。总延迟最多 3s。
+    // 1s 足以应对瞬时网络抖动；若 3s 内对端仍未恢复，
+    // 则大概率要等心跳重连（5s 周期）后才能恢复。
     enum { RETRY_DELAY_MS = 1000, MAX_RETRIES = 3 };
 };
 

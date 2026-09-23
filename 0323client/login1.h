@@ -21,7 +21,7 @@ public:
     {
         m_pkernel=pkernel;
     }
-    // Expose credentials for cluster redirect auto-reconnect
+    // 暴露凭据，用于集群重定向后自动重连
     QString getUsername() const;
     QString getPassword() const;
 private slots:

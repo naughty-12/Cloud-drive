@@ -38,7 +38,7 @@ void DbWorker::run() {
                 task();
             } catch (...) {
                 fprintf(stderr, "DbWorker: task threw exception, skipping\n");
-                // Do NOT rethrow — that would kill the worker thread permanently
+                // 不要重新抛出异常——否则会永久终止工作线程
             }
             lock.lock();
         }

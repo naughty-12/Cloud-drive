@@ -17,16 +17,16 @@ void ReplicationWorker::stop() {
     if (m_thread.joinable()) {
         m_thread.join();
     }
-    // Remaining tasks intentionally dropped — cluster-wide shutdown,
-    // same behavior as DbWorker. Single-node crash recovery via reconciliation.
+    // 剩余任务有意丢弃——集群级关停，
+    // 与 DbWorker 行为一致。单节点崩溃后通过对账机制恢复。
 }
 
 bool ReplicationWorker::enqueue(ReplicationTask task) {
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_queue.size() >= MAX_QUEUE_SIZE) {
-            // Queue full → peer is likely unreachable. Drop with warning.
-            // Reconciliation will catch up when peer recovers.
+            // 队列已满 → 对端很可能不可达。丢弃并告警。
+            // 对端恢复后由对账机制补齐。
             fprintf(stderr, "[ReplWorker] WARNING: queue full (%zu tasks), "
                     "dropping block %d for file %lld\n",
                     m_queue.size(), task.blockSeq, (long long)task.fileId);
@@ -51,10 +51,10 @@ void ReplicationWorker::run() {
             lock.unlock();
 
             try {
-                // Retry loop: 3 attempts, 1s interval
+                // 重试循环：3 次尝试，间隔 1s
                 while (task.retryCount < task.maxRetries) {
                     if (executeTask(task)) {
-                        break; // success
+                        break; // 成功
                     }
                     task.retryCount++;
                     if (task.retryCount < task.maxRetries) {
@@ -70,7 +70,7 @@ void ReplicationWorker::run() {
                 }
             } catch (...) {
                 fprintf(stderr, "[ReplWorker] exception in task, skipping\n");
-                // Do NOT rethrow — keep worker thread alive (same as DbWorker)
+                // 不要重新抛出异常——保持工作线程存活（与 DbWorker 相同）
             }
 
             lock.lock();

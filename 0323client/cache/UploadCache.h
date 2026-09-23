@@ -10,18 +10,18 @@ public:
     UploadCache();
     ~UploadCache();
 
-    bool open(const char* dbPath);  // e.g. "./upload_cache.db"
+    bool open(const char* dbPath);  // 例如 "./upload_cache.db"
     void close();
 
-    // Lookup by file path + mtime + size -> SHA-256 (if unchanged)
-    // Returns empty string if not found
+    // 按文件路径 + mtime + size 查找 -> SHA-256（若文件未变）
+    // 未找到时返回空字符串
     std::string lookup(const std::string& filePath, int64_t mtime, int64_t size);
 
-    // Store/update cache entry
+    // 存储/更新缓存条目
     void store(const std::string& filePath, int64_t mtime, int64_t size,
                const std::string& sha256);
 
-    // Remove stale entries (file no longer exists)
+    // 清除过期条目（文件已不存在）
     void purge(const std::string& filePath);
 
 private:

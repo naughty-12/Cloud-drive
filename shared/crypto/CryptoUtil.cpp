@@ -5,7 +5,7 @@
 #include <cstring>
 #include <algorithm>
 
-// ─── SHA-256 Round Constants ────────────────────────────────────────────
+// ─── SHA-256 轮常量 ────────────────────────────────────────────
 const uint32_t CryptoUtil::K[64] = {
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
     0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -25,7 +25,7 @@ const uint32_t CryptoUtil::K[64] = {
     0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 };
 
-// ─── SHA-256 Macros ─────────────────────────────────────────────────────
+// ─── SHA-256 宏 ─────────────────────────────────────────────────────
 #define ROTRIGHT(a,b) (((a)>>(b))|((a)<<(32-(b))))
 #define CH(x,y,z)     (((x)&(y))^(~(x)&(z)))
 #define MAJ(x,y,z)    (((x)&(y))^((x)&(z))^((y)&(z)))
@@ -34,7 +34,7 @@ const uint32_t CryptoUtil::K[64] = {
 #define SIG0(x)       (ROTRIGHT(x,7)^ROTRIGHT(x,18)^((x)>>3))
 #define SIG1(x)       (ROTRIGHT(x,17)^ROTRIGHT(x,19)^((x)>>10))
 
-// ─── Password Salt ──────────────────────────────────────────────────────
+// ─── 密码盐值 ──────────────────────────────────────────────────────
 const std::string CryptoUtil::PASSWORD_SALT = "0323CloudDisk_SALT_2026";
 
 // ─── sha256Init ─────────────────────────────────────────────────────────
@@ -56,7 +56,7 @@ void CryptoUtil::sha256Transform(Sha256Ctx* ctx, const uint8_t data[]) {
     uint32_t a, b, c, d, e, f, g, h, t1, t2;
     uint32_t m[64];
 
-    // Prepare message schedule W[0..15] from input block (big-endian)
+    // 从输入块（大端序）准备消息调度表 W[0..15]
     for (int i = 0, j = 0; i < 16; i++, j += 4) {
         m[i] = ((uint32_t)data[j] << 24)
              | ((uint32_t)data[j+1] << 16)
@@ -64,12 +64,12 @@ void CryptoUtil::sha256Transform(Sha256Ctx* ctx, const uint8_t data[]) {
              | ((uint32_t)data[j+3]);
     }
 
-    // Extend to W[16..63]
+    // 扩展至 W[16..63]
     for (int i = 16; i < 64; i++) {
         m[i] = SIG1(m[i-2]) + m[i-7] + SIG0(m[i-15]) + m[i-16];
     }
 
-    // Initialize working variables
+    // 初始化工作变量
     a = ctx->state[0];
     b = ctx->state[1];
     c = ctx->state[2];
@@ -79,7 +79,7 @@ void CryptoUtil::sha256Transform(Sha256Ctx* ctx, const uint8_t data[]) {
     g = ctx->state[6];
     h = ctx->state[7];
 
-    // 64 rounds
+    // 64 轮迭代
     for (int i = 0; i < 64; i++) {
         t1 = h + EP1(e) + CH(e,f,g) + K[i] + m[i];
         t2 = EP0(a) + MAJ(a,b,c);
@@ -93,7 +93,7 @@ void CryptoUtil::sha256Transform(Sha256Ctx* ctx, const uint8_t data[]) {
         a = t1 + t2;
     }
 
-    // Update state
+    // 更新状态
     ctx->state[0] += a;
     ctx->state[1] += b;
     ctx->state[2] += c;
@@ -121,7 +121,7 @@ void CryptoUtil::sha256Update(Sha256Ctx* ctx, const uint8_t* data, size_t len) {
 void CryptoUtil::sha256Final(Sha256Ctx* ctx, uint8_t hash[32]) {
     uint32_t i = ctx->datalen;
 
-    // Padding: append 0x80
+    // 填充：追加 0x80
     if (ctx->datalen < 56) {
         ctx->data[i++] = 0x80;
         while (i < 56)
@@ -134,8 +134,10 @@ void CryptoUtil::sha256Final(Sha256Ctx* ctx, uint8_t hash[32]) {
         memset(ctx->data, 0, 56);
     }
 
-    // Append total bit length as 64-bit big-endian
-    ctx->bitlen += ctx->datalen * 8;
+    // 以 64 位大端序追加总比特长度
+    // （datalen 为 uint32_t：相乘前先转换，避免 32 位溢出
+    //  - 由 clang-tidy bugprone-implicit-widening-of-multiplication-result 检查标记）
+    ctx->bitlen += static_cast<uint64_t>(ctx->datalen) * 8;
     ctx->data[56] = (uint8_t)(ctx->bitlen >> 56);
     ctx->data[57] = (uint8_t)(ctx->bitlen >> 48);
     ctx->data[58] = (uint8_t)(ctx->bitlen >> 40);
@@ -147,7 +149,7 @@ void CryptoUtil::sha256Final(Sha256Ctx* ctx, uint8_t hash[32]) {
 
     sha256Transform(ctx, ctx->data);
 
-    // Output 32 bytes as big-endian
+    // 以大端序输出 32 字节
     for (i = 0; i < 4; i++) {
         hash[i]      = (uint8_t)((ctx->state[0] >> (24 - i*8)) & 0xff);
         hash[i+4]    = (uint8_t)((ctx->state[1] >> (24 - i*8)) & 0xff);
@@ -235,7 +237,7 @@ std::string CryptoUtil::sparseFingerprint(const std::string& filePath) {
     Sha256Ctx ctx;
     sha256Init(&ctx);
 
-    // Read head 4KB
+    // 读取头部 4KB
     const size_t HEAD_SIZE = 4096;
     char buffer[4096];
     file.seekg(0, std::ios::beg);
@@ -249,7 +251,7 @@ std::string CryptoUtil::sparseFingerprint(const std::string& filePath) {
     }
     sha256Update(&ctx, reinterpret_cast<const uint8_t*>(buffer), headRead);
 
-    // Read tail 4KB
+    // 读取尾部 4KB
     const size_t TAIL_SIZE = 4096;
     if (fileSize > static_cast<std::streamsize>(TAIL_SIZE)) {
         file.seekg(-static_cast<std::streamoff>(TAIL_SIZE), std::ios::end);
@@ -260,7 +262,7 @@ std::string CryptoUtil::sparseFingerprint(const std::string& filePath) {
     size_t tailRead = static_cast<size_t>(file.gcount());
     sha256Update(&ctx, reinterpret_cast<const uint8_t*>(buffer), tailRead);
 
-    // Hash file size as 8-byte big-endian
+    // 以 8 字节大端序哈希文件大小
     uint64_t size = static_cast<uint64_t>(fileSize);
     uint8_t sizeBytes[8];
     for (int i = 0; i < 8; i++) {
@@ -280,8 +282,8 @@ std::string CryptoUtil::sparseFingerprint(const std::string& filePath) {
 }
 
 // ─── sparseFingerprintFromBlocks ──────────────────────────────────────────
-// Server-side: compute sparse fingerprint from already-uploaded blocks.
-// head and tail are the raw first/last chunks read from FileStorage.
+// 服务端：从已上传的数据块计算稀疏指纹。
+// head 与 tail 是从 FileStorage 读取的原始首/尾块。
 std::string CryptoUtil::sparseFingerprintFromBlocks(const std::string& head,
                                                      const std::string& tail,
                                                      uint64_t fileSize) {
@@ -291,17 +293,17 @@ std::string CryptoUtil::sparseFingerprintFromBlocks(const std::string& head,
     Sha256Ctx ctx;
     sha256Init(&ctx);
 
-    // Hash head (up to 4KB)
+    // 哈希头部（最多 4KB）
     size_t headLen = std::min(head.size(), HEAD_SIZE);
     sha256Update(&ctx, reinterpret_cast<const uint8_t*>(head.data()), headLen);
 
-    // Hash tail (up to 4KB) — if file < 4KB, head and tail overlap, that's fine
+    // 哈希尾部（最多 4KB）—— 若文件小于 4KB，头尾重叠也无妨
     if (!tail.empty()) {
         size_t tailLen = std::min(tail.size(), TAIL_SIZE);
         sha256Update(&ctx, reinterpret_cast<const uint8_t*>(tail.data()), tailLen);
     }
 
-    // Hash file size as 8-byte big-endian
+    // 以 8 字节大端序哈希文件大小
     uint8_t sizeBytes[8];
     for (int i = 0; i < 8; i++) {
         sizeBytes[i] = static_cast<uint8_t>((fileSize >> (56 - i*8)) & 0xff);

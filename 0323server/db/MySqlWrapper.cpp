@@ -39,7 +39,7 @@ void MySqlWrapper::disconnect() {
     m_connected = false;
 }
 
-// ─── Helper struct: owns bind buffers for the lifetime of execute ───────
+// ─── 辅助结构体：在 execute 生命周期内持有绑定缓冲区 ───────
 struct BindBuf {
     MYSQL_BIND*      bind;
     std::string*     strBufs;
@@ -65,7 +65,7 @@ struct BindBuf {
         delete[] strLens;
     }
 
-    // Non-copyable, movable
+    // 不可拷贝，可移动
     BindBuf(const BindBuf&) = delete;
     BindBuf& operator=(const BindBuf&) = delete;
     BindBuf(BindBuf&&) = default;
@@ -73,7 +73,7 @@ struct BindBuf {
 };
 
 // ─── bindParams ─────────────────────────────────────────────────────────
-// Returns a BindBuf that MUST stay alive until after mysql_stmt_execute.
+// 返回的 BindBuf 必须存活到 mysql_stmt_execute 之后。
 static BindBuf bindParams(MYSQL_STMT* stmt,
                           const std::vector<SqlValue>& params) {
     BindBuf buf(params.size());
@@ -98,14 +98,14 @@ static BindBuf bindParams(MYSQL_STMT* stmt,
             buf.bind[i].buffer      = &buf.dblBufs[i];
             buf.bind[i].is_null     = nullptr;
         } else {
-            // Null
+            // Null 值
             buf.bind[i].buffer_type = MYSQL_TYPE_NULL;
             buf.bind[i].is_null     = nullptr;
         }
     }
 
     mysql_stmt_bind_param(stmt, buf.bind);
-    return buf; // move-eligible; BindBuf owns the heap arrays
+    return buf; // 可移动；BindBuf 持有堆数组的所有权
 }
 // ─── execute ────────────────────────────────────────────────────────────
 bool MySqlWrapper::execute(const char* sql,
@@ -120,7 +120,7 @@ bool MySqlWrapper::execute(const char* sql,
         return false;
     }
 
-    // BindBuf lives until end of scope — past mysql_stmt_execute
+    // BindBuf 存活到作用域结束——即 mysql_stmt_execute 之后
     BindBuf buf = bindParams(stmt, params);
 
     if (mysql_stmt_execute(stmt) != 0) {
@@ -147,7 +147,7 @@ bool MySqlWrapper::query(const char* sql,
         return false;
     }
 
-    // BindBuf lives until end of scope — past mysql_stmt_execute
+    // BindBuf 存活到作用域结束——即 mysql_stmt_execute 之后
     BindBuf buf = bindParams(stmt, params);
 
     if (mysql_stmt_execute(stmt) != 0) {
@@ -167,7 +167,7 @@ bool MySqlWrapper::query(const char* sql,
         return true;
     }
 
-    // Allocate result bindings (buffers zero-initialised for safe cleanup on error)
+    // 分配结果绑定缓冲区（缓冲区零初始化，出错时可安全清理）
     MYSQL_BIND* resultBind = new MYSQL_BIND[nColumn]();
     char** buffers = new char*[nColumn]();
     unsigned long* lengths = new unsigned long[nColumn];
@@ -184,7 +184,7 @@ bool MySqlWrapper::query(const char* sql,
     }
 
     if (mysql_stmt_bind_result(stmt, resultBind) != 0) {
-        // Bind failed — clean up all heap allocations before returning
+        // 绑定失败——返回前清理所有堆分配
         for (int i = 0; i < nColumn; i++) {
             delete[] buffers[i];
         }
@@ -210,7 +210,7 @@ bool MySqlWrapper::query(const char* sql,
     mysql_stmt_free_result(stmt);
     mysql_stmt_close(stmt);
 
-    // Cleanup
+    // 清理
     for (int i = 0; i < nColumn; i++) {
         delete[] buffers[i];
     }
@@ -228,7 +228,7 @@ bool MySqlWrapper::executeRaw(const char* sql) {
     return mysql_query(m_sock, sql) == 0;
 }
 
-// ─── Transaction support (F8-2 fix) ────────────────────────────────────
+// ─── 事务支持（F8-2 修复）────────────────────────────────────
 bool MySqlWrapper::begin() {
     return executeRaw("START TRANSACTION");
 }

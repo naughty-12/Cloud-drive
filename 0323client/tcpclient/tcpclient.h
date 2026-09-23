@@ -22,7 +22,7 @@ public:
 private:
     SOCKET m_sockclient;
     std::atomic<bool> m_bFlagQuit{true};
-    bool m_bWSAStarted{false};   // guard against double-WSACleanup
+    bool m_bWSAStarted{false};   // 防止重复调用 WSACleanup
     std::thread m_recvThread;
     Ikernel*m_pkernel;
 };

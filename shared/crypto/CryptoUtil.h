@@ -3,14 +3,14 @@
 
 /**
  * @file CryptoUtil.h
- * @brief SHA-256 cryptographic utilities (RFC 6234 compliant).
+ * @brief SHA-256 加密工具（符合 RFC 6234）。
  *
- * Provides: sha256(data), fileFingerprint(path), sparseFingerprint(path),
- * hashPassword(password + salt).  Used for file dedup (replacing MD5),
- * password hashing, and data integrity verification throughout the system.
+ * 提供：sha256(data)、fileFingerprint(path)、sparseFingerprint(path)、
+ * hashPassword(password + salt)。用于文件去重（替代 MD5）、
+ * 密码哈希以及全系统的数据完整性校验。
  *
- * Correctness: Verified against NIST test vectors.
- * Performance: ~200 MB/s on modern x86_64 (software), faster with SHA-NI.
+ * 正确性：已通过 NIST 测试向量验证。
+ * 性能：现代 x86_64 上纯软件实现约 200 MB/s，启用 SHA-NI 后更快。
  */
 
 #include <string>
@@ -18,26 +18,26 @@
 
 class CryptoUtil {
 public:
-    // SHA-256 hash → 64-char hex string
+    // SHA-256 哈希 → 64 字符十六进制字符串
     static std::string sha256(const std::string& data);
     static std::string sha256(const char* data, size_t len);
 
-    // File fingerprint: SHA-256 of entire file content
+    // 文件指纹：对整个文件内容计算 SHA-256
     static std::string fileFingerprint(const std::string& filePath);
 
-    // Sparse fingerprint: SHA-256(head 4KB + tail 4KB + size as big-endian)
+    // 稀疏指纹：SHA-256(头 4KB + 尾 4KB + 大端序文件大小)
     static std::string sparseFingerprint(const std::string& filePath);
 
-    // Sparse fingerprint from raw data blocks (server-side: compute from FileStorage blocks)
-    // head: first up-to-4096 bytes of file, tail: last up-to-4096 bytes, fileSize: total bytes
+    // 基于原始数据块的稀疏指纹（服务端：从 FileStorage 的块计算）
+    // head：文件开头最多 4096 字节，tail：文件末尾最多 4096 字节，fileSize：总字节数
     static std::string sparseFingerprintFromBlocks(const std::string& head,
                                                     const std::string& tail,
                                                     uint64_t fileSize);
 
-    // Password hashing: SHA-256(password + SALT)
+    // 密码哈希：SHA-256(password + SALT)
     static std::string hashPassword(const std::string& password);
 
-    // Streaming SHA-256 API for incremental hash computation (F4-2 fix)
+    // 流式 SHA-256 API，支持增量哈希计算（F4-2 修复）
     struct Sha256Ctx {
         uint8_t  data[64];
         uint32_t datalen;
@@ -47,10 +47,10 @@ public:
     static void sha256Init(Sha256Ctx* ctx);
     static void sha256Update(Sha256Ctx* ctx, const uint8_t* data, size_t len);
     static void sha256Final(Sha256Ctx* ctx, uint8_t hash[32]);
-    static std::string sha256FinalHex(Sha256Ctx* ctx);  // finalize → hex string
+    static std::string sha256FinalHex(Sha256Ctx* ctx);  // 收尾计算 → 十六进制字符串
 
 private:
-    static const std::string PASSWORD_SALT;  // "0323CloudDisk_SALT_2026"
+    static const std::string PASSWORD_SALT;  // 密码盐值："0323CloudDisk_SALT_2026"
 
     static void sha256Transform(Sha256Ctx* ctx, const uint8_t data[]);
     static const uint32_t K[64];

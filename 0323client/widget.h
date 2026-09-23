@@ -4,6 +4,7 @@
 #include <QWidget>
 #include "kernel/tcpkernel.h"
 #include "login1.h"
+#include "TagCloud.h"
 #include "Packdef.h"
 #include "ProtocolFactory.h"
 #include <QTime>
@@ -42,28 +43,28 @@ public slots:
     void slot_loginrs(const STRU_LOGINRS&);
     void slot_getfilelistrs(const STRU_GETFILELISTRS& psg);
     void slot_uploadfileinfors(const STRU_UPLOADFILEINFORS&);
-    // Phase 2: Download, Delete, Share, Extract
+    // Phase 2：下载、删除、分享、提取
     void slot_downloadinfors(const STRU_DOWNLOADFILEINFORS&);
     void slot_downloadblockrs(const STRU_DOWNLOADFILEBLOCKRS&);
     void slot_deleters(const STRU_DELETEFILERS&);
     void slot_sharers(const STRU_SHAREFILERS&);
     void slot_getfilers(const STRU_GETFILERS&);
-    // Cluster: redirect slot
+    // Cluster：重定向槽
     void slot_redirect(const STRU_REDIRECTRS&);
 
-    // Phase 2: HTTP streaming token slot
+    // Phase 2：HTTP 流媒体令牌槽
     void slot_streamtoken(const STRU_STREAMTOKENRS&);
 
-    // Phase 3: AI slots
+    // Phase 3：AI 槽
     void slot_aipreview(const STRU_AIPREVIEWRS&);
     void slot_aisearch(const STRU_AISEARCHRS&);
     void slot_aitag(const STRU_AITAGRS&);
 
-    // Upload block ACK (X3 fix)
+    // 上传块 ACK（X3 修复）
     void slot_uploadfileblockrs(const STRU_UPLOADFILEBLOCKRS&);
-    // Delete Share (F10-4)
+    // 撤销分享（F10-4）
     void slot_deletesharers(const STRU_DELETESHARERS&);
-    // L2 Sparse fingerprint pre-check (upload funnel)
+    // L2 稀疏指纹预检（上传漏斗）
     void slot_sparsecheckrs(const STRU_SPARSECHECKRS&);
 private slots:
     void on_pushButton_clicked();
@@ -72,7 +73,9 @@ private slots:
     void on_pushButton_4_clicked();
     void on_pushButton_5_clicked();
     void on_pushButton_6_clicked();
-    void on_pushButton_7_clicked();  // F10-4: Revoke share button
+    void on_pushButton_7_clicked();  // F10-4：撤销分享按钮
+    // 标签云点击 → 过滤文件列表（tag 为空串 = 取消过滤）
+    void onTagClicked(const QString& tag);
 
 private:
     Ui::Widget *ui;
@@ -81,8 +84,10 @@ private:
     long long Userid;
     std::list<STRU_FILEINFO*> m_lstfileinfo;
     long m_fileNum;
+    // Phase 3：AI 标签云（会话内聚合 AITagRS）
+    TagCloud* m_tagCloud;
 
-    // Phase 2: Download state
+    // Phase 2：下载状态
     int64_t m_downloadFileId;
     QString m_downloadFileName;
     int64_t m_downloadFileSize;
@@ -92,22 +97,22 @@ private:
     FILE*   m_downloadFile;
     void    requestDownloadBlock(int64_t pos);
 
-    // Phase 2: File ID mapping (filename → fileID)
+    // Phase 2：文件 ID 映射（文件名 → fileID）
     std::map<std::string, int64_t> m_fileIdMap;
 
-    // Multi-batch file list: track cumulative row offset across batches
+    // 多批次文件列表：跨批次累计行偏移量
     int      m_fileListRowOffset;
 
-    // X3 fix: Block ACK tracking for upload fire-and-forget
+    // X3 修复：上传"发后即忘"模式的块 ACK 追踪
     int      m_uploadTotalBlocks;
     int      m_uploadReceivedAcks;
-    QString  m_uploadFileName;       // Pending upload file name for display
+    QString  m_uploadFileName;       // 待上传文件名（用于显示）
 
-    // X5 fix: SHA-256 verification after download
+    // X5 修复：下载后 SHA-256 校验
     QString  m_downloadSavePath;
     QString  m_downloadExpectedSHA256;
 
-    // L2 sparsecheck pending upload context (saved while waiting for server response)
+    // L2 稀疏指纹预检的挂起上传上下文（等待服务器响应期间暂存）
     QString  m_pendingUploadPath;
     QString  m_pendingUploadName;
     long long m_pendingUploadSize;

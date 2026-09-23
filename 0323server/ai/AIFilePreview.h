@@ -7,10 +7,10 @@
 
 struct PreviewResult {
     bool        success = false;
-    std::string summary;       // ~200 chars Chinese summary
-    std::string keywords;      // comma-separated, 5-8 keywords
-    std::string keySentences;  // 3 key sentences, newline-separated
-    std::string fileType;      // inferred file type
+    std::string summary;       // 约 200 字的中文摘要
+    std::string keywords;      // 逗号分隔的 5-8 个关键词
+    std::string keySentences;  // 3 个关键句，换行分隔
+    std::string fileType;      // 推断出的文件类型
     std::string errorMsg;
 };
 

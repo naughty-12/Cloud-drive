@@ -1,17 +1,17 @@
 /**
  * @file ProtocolFactory.cpp
- * @brief Implementation of all protocol serialize/deserialize methods.
+ * @brief 全部协议序列化/反序列化方法的实现。
  *
- * Every serialize method follows the same pattern:
- *   1. Create a BinaryStream.
- *   2. Write m_ntype first (as a single byte).
- *   3. Write each struct field in order using operator<< or named methods.
- *   4. Return the raw BinaryStream bytes (network layer adds framing).
+ * 每个序列化方法遵循相同模式：
+ *   1. 创建 BinaryStream。
+ *   2. 首先写入 m_ntype（单个字节）。
+ *   3. 按顺序用 operator<< 或具名方法写入每个结构体字段。
+ *   4. 返回 BinaryStream 原始字节（加帧由网络层完成）。
  *
- * Every deserialize method:
- *   1. BinaryStream::fromData(body, len).
- *   2. Read each field in the same order as serialized.
- *   3. Return the populated struct.
+ * 每个反序列化方法：
+ *   1. BinaryStream::fromData(body, len)。
+ *   2. 按序列化时的相同顺序读取每个字段。
+ *   3. 返回填充完成的结构体。
  */
 
 #include "ProtocolFactory.h"
@@ -35,9 +35,9 @@ char ProtocolFactory::parseType(const char* packetBody, int bodyLen)
 
 std::vector<uint8_t> ProtocolFactory::wrapPacket(const std::vector<uint8_t>& body)
 {
-    // 4-byte big-endian length prefix + body
+    // 4 字节大端长度前缀 + 包体
     uint32_t bodyLen = static_cast<uint32_t>(body.size());
-    // Big-endian encoding (no platform dependency)
+    // 大端编码（无平台依赖）
     uint8_t lenBytes[4] = {
         (uint8_t)(bodyLen >> 24), (uint8_t)(bodyLen >> 16),
         (uint8_t)(bodyLen >> 8),  (uint8_t)(bodyLen)
@@ -52,7 +52,7 @@ std::vector<uint8_t> ProtocolFactory::wrapPacket(const std::vector<uint8_t>& bod
 }
 
 // ============================================================================
-// FILEINFO helpers
+// FILEINFO 辅助函数
 // ============================================================================
 
 void ProtocolFactory::serializeFileInfo(BinaryStream& bs, const FILEINFO& info)
@@ -75,7 +75,7 @@ FILEINFO ProtocolFactory::deserializeFileInfo(BinaryStream& bs)
 }
 
 // ============================================================================
-// 1. Register
+// 1. 注册
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeRegisterRQ(const STRU_REGISTERRQ& s)
@@ -115,7 +115,7 @@ STRU_REGISTERRS ProtocolFactory::deserializeRegisterRS(const char* body, int len
 }
 
 // ============================================================================
-// 2. Login
+// 2. 登录
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeLoginRQ(const STRU_LOGINRQ& s)
@@ -155,7 +155,7 @@ STRU_LOGINRS ProtocolFactory::deserializeLoginRS(const char* body, int len)
 }
 
 // ============================================================================
-// 3. Get File List
+// 3. 获取文件列表
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeGetFileListRQ(const STRU_GETFILELISTRQ& s)
@@ -199,7 +199,7 @@ STRU_GETFILELISTRS ProtocolFactory::deserializeGetFileListRS(const char* body, i
 }
 
 // ============================================================================
-// 4. Upload File Info
+// 4. 上传文件信息
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeUploadFileInfoRQ(const STRU_UPLOADFILEINFORQ& s)
@@ -247,7 +247,7 @@ STRU_UPLOADFILEINFORS ProtocolFactory::deserializeUploadFileInfoRS(const char* b
 }
 
 // ============================================================================
-// 5. Upload File Block
+// 5. 上传文件块
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeUploadFileBlockRQ(const STRU_UPLOADFILEBLOCKRQ& s)
@@ -256,8 +256,8 @@ std::vector<uint8_t> ProtocolFactory::serializeUploadFileBlockRQ(const STRU_UPLO
     bs.writeRaw(&s.m_ntype, 1);
     bs << s.m_userId;
     bs << s.m_fileID;
-    bs << s.m_blockSeq;   // F4-6: explicit block sequence number
-    // File content: write actual size as int64_t, then raw bytes
+    bs << s.m_blockSeq;   // F4-6：显式块序号
+    // 文件内容：先写实际大小（int64_t），再写原始字节
     bs << s.m_fileblocksize;
     if (s.m_fileblocksize > 0) {
         bs.writeRaw(s.m_szFileContent, static_cast<int>(s.m_fileblocksize));
@@ -281,12 +281,12 @@ STRU_UPLOADFILEBLOCKRQ ProtocolFactory::deserializeUploadFileBlockRQ(const char*
     STRU_UPLOADFILEBLOCKRQ s;
     bs >> s.m_userId;
     bs >> s.m_fileID;
-    bs >> s.m_blockSeq;   // F4-6: explicit block sequence number
+    bs >> s.m_blockSeq;   // F4-6：显式块序号
     bs >> s.m_fileblocksize;
     if (s.m_fileblocksize > 0 && s.m_fileblocksize <= MAXFILECONTENT) {
         bs.readRaw(s.m_szFileContent, static_cast<int>(s.m_fileblocksize));
     } else if (s.m_fileblocksize > MAXFILECONTENT) {
-        // Truncation safety: read only up to MAXFILECONTENT
+        // 截断保护：最多只读取 MAXFILECONTENT
         bs.readRaw(s.m_szFileContent, MAXFILECONTENT);
         s.m_fileblocksize = MAXFILECONTENT;
     }
@@ -304,7 +304,7 @@ STRU_UPLOADFILEBLOCKRS ProtocolFactory::deserializeUploadFileBlockRS(const char*
 }
 
 // ============================================================================
-// 6. Download File Info
+// 6. 下载文件信息
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeDownloadFileInfoRQ(const STRU_DOWNLOADFILEINFORQ& s)
@@ -356,7 +356,7 @@ STRU_DOWNLOADFILEINFORS ProtocolFactory::deserializeDownloadFileInfoRS(const cha
 }
 
 // ============================================================================
-// 7. Download File Block
+// 7. 下载文件块
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeDownloadFileBlockRQ(const STRU_DOWNLOADFILEBLOCKRQ& s)
@@ -402,7 +402,7 @@ STRU_DOWNLOADFILEBLOCKRS ProtocolFactory::deserializeDownloadFileBlockRS(const c
     if (s.m_fileblocksize > 0 && s.m_fileblocksize <= MAXFILECONTENT) {
         bs.readRaw(s.m_szFileContent, static_cast<int>(s.m_fileblocksize));
     } else if (s.m_fileblocksize > MAXFILECONTENT) {
-        // Truncation safety: read only up to MAXFILECONTENT
+        // 截断保护：最多只读取 MAXFILECONTENT
         bs.readRaw(s.m_szFileContent, MAXFILECONTENT);
         s.m_fileblocksize = MAXFILECONTENT;
     }
@@ -412,7 +412,7 @@ STRU_DOWNLOADFILEBLOCKRS ProtocolFactory::deserializeDownloadFileBlockRS(const c
 }
 
 // ============================================================================
-// 8. Search File
+// 8. 搜索文件
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeSearchFileRQ(const STRU_SEARCHFILERQ& s)
@@ -458,7 +458,7 @@ STRU_SEARCHFILERS ProtocolFactory::deserializeSearchFileRS(const char* body, int
 }
 
 // ============================================================================
-// 9. Delete File
+// 9. 删除文件
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeDeleteFileRQ(const STRU_DELETEFILERQ& s)
@@ -498,7 +498,7 @@ STRU_DELETEFILERS ProtocolFactory::deserializeDeleteFileRS(const char* body, int
 }
 
 // ============================================================================
-// 10. Share File
+// 10. 分享文件
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeShareFileRQ(const STRU_SHAREFILERQ& s)
@@ -542,7 +542,7 @@ STRU_SHAREFILERS ProtocolFactory::deserializeShareFileRS(const char* body, int l
 }
 
 // ---------------------------------------------------------------------------
-// 10.5 Delete Share (F10-4: share revocation)
+// 10.5 撤销分享（F10-4：分享撤销）
 // ---------------------------------------------------------------------------
 
 std::vector<uint8_t> ProtocolFactory::serializeDeleteShareRQ(const STRU_DELETESHARERQ& s)
@@ -582,7 +582,7 @@ STRU_DELETESHARERS ProtocolFactory::deserializeDeleteShareRS(const char* body, i
 }
 
 // ============================================================================
-// 10.6 Sparse Fingerprint Pre-check (L2 upload funnel)
+// 10.6 稀疏指纹预检（秒传 L2 漏斗）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeSparseCheckRQ(const STRU_SPARSECHECKRQ& s)
@@ -622,7 +622,7 @@ STRU_SPARSECHECKRS ProtocolFactory::deserializeSparseCheckRS(const char* body, i
 }
 
 // ============================================================================
-// 11. Get File (Extract)
+// 11. 获取文件（提取码）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeGetFileRQ(const STRU_GETFILERQ& s)
@@ -668,7 +668,7 @@ STRU_GETFILERS ProtocolFactory::deserializeGetFileRS(const char* body, int len)
 }
 
 // ============================================================================
-// 12. AI Preview (Phase 3)
+// 12. AI 预览（Phase 3）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeAIPreviewRQ(const STRU_AIPREVIEWRQ& s)
@@ -724,7 +724,7 @@ STRU_AIPREVIEWRS ProtocolFactory::deserializeAIPreviewRS(const char* body, int l
 }
 
 // ============================================================================
-// 13. AI Semantic Search (Phase 3)
+// 13. AI 语义搜索（Phase 3）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeAISearchRQ(const STRU_AISEARCHRQ& s)
@@ -776,7 +776,7 @@ STRU_AISEARCHRS ProtocolFactory::deserializeAISearchRS(const char* body, int len
 }
 
 // ============================================================================
-// 14. AI Auto Tag (Phase 3)
+// 14. AI 自动标签（Phase 3）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeAITagRQ(const STRU_AITAGRQ& s)
@@ -836,7 +836,7 @@ STRU_AITAGRS ProtocolFactory::deserializeAITagRS(const char* body, int len)
 }
 
 // ============================================================================
-// 15. Stream Token (Phase 2: HTTP video/audio streaming)
+// 15. 流媒体 Token（Phase 2：HTTP 视频/音频流媒体）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeStreamTokenRQ(const STRU_STREAMTOKENRQ& s)
@@ -886,7 +886,7 @@ STRU_STREAMTOKENRS ProtocolFactory::deserializeStreamTokenRS(const char* body, i
 }
 
 // ============================================================================
-// 16. Cluster: Replicate Block (Phase: Distributed L2)
+// 16. 集群：复制块（分布式 L2）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeReplicateBlockRQ(const STRU_REPLICATEBLOCKRQ& s)
@@ -945,7 +945,7 @@ STRU_REPLICATEBLOCKRS ProtocolFactory::deserializeReplicateBlockRS(const char* b
 }
 
 // ============================================================================
-// 17. Cluster: Redirect (Phase: Distributed L2)
+// 17. 集群：重定向（分布式 L2）
 // ============================================================================
 
 std::vector<uint8_t> ProtocolFactory::serializeRedirectRS(const STRU_REDIRECTRS& s)

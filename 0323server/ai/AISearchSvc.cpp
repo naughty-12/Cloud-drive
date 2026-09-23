@@ -7,7 +7,7 @@
 #include <cstdlib>
 
 // ============================================================================
-// Helpers: float vector ↔ CSV string (C++11, zero external dependencies)
+// 辅助函数: float 向量 ↔ CSV 字符串（C++11，零外部依赖）
 // ============================================================================
 std::string AISearchSvc::serializeEmbedding(const std::vector<float>& emb) {
     std::ostringstream oss;
@@ -30,12 +30,12 @@ std::vector<float> AISearchSvc::deserializeEmbedding(const std::string& csv) {
 }
 
 // ============================================================================
-// Constructor
+// 构造函数
 // ============================================================================
 AISearchSvc::AISearchSvc(MySqlWrapper* sql) : m_sql(sql) {}
 
 // ============================================================================
-// loadEmbedding / storeEmbedding — real DB-backed implementation
+// loadEmbedding / storeEmbedding — 基于 DB 的真实实现
 // ============================================================================
 std::vector<float> AISearchSvc::loadEmbedding(int64_t fileId) {
     if (!m_sql) return {};
@@ -50,7 +50,7 @@ std::vector<float> AISearchSvc::loadEmbedding(int64_t fileId) {
 void AISearchSvc::storeEmbedding(int64_t fileId, const std::vector<float>& embedding) {
     if (!m_sql) return;
     std::string csv = serializeEmbedding(embedding);
-    // ON DUPLICATE KEY UPDATE for idempotent re-indexing
+    // 使用 ON DUPLICATE KEY UPDATE 实现幂等重建索引
     m_sql->execute(
         "INSERT INTO file_embeddings(f_id, embedding) VALUES(?,?) "
         "ON DUPLICATE KEY UPDATE embedding=VALUES(embedding)",
@@ -58,38 +58,38 @@ void AISearchSvc::storeEmbedding(int64_t fileId, const std::vector<float>& embed
 }
 
 // ============================================================================
-// Fallback: filename LIKE search (when AI is unavailable or embeddings missing)
+// 降级: 文件名 LIKE 搜索（AI 不可用或缺少 Embedding 时）
 // ============================================================================
 static STRU_AISEARCHRS fallbackSearch(const std::string& query, int64_t userId) {
     STRU_AISEARCHRS rs;
     rs.m_nResultNum = 0;
-    rs.m_szResult = 1;  // success but with fallback marker
+    rs.m_szResult = 1;  // 成功但带降级标记
     (void)query;
     (void)userId;
     return rs;
 }
 
 // ============================================================================
-// search — query embedding → load all user files' embeddings → cosine rank → top-K
+// search — 查询 Embedding → 加载用户所有文件的 Embedding → 余弦排序 → Top-K
 // ============================================================================
 STRU_AISEARCHRS AISearchSvc::search(const std::string& query, int64_t userId) {
     if (!isAIEnabled()) {
         return fallbackSearch(query, userId);
     }
 
-    // Step 1: get query embedding
+    // 第 1 步: 获取查询语句的 Embedding
     auto embResult = api()->embedding(query);
     if (!embResult.success || embResult.embedding.empty()) {
         return fallbackSearch(query, userId);
     }
 
-    // Step 2: load all indexed files for this user (with file metadata)
-    // Only files that have been indexed (have embeddings) are considered
+    // 第 2 步: 加载该用户所有已索引的文件（附带文件元数据）
+    // 仅考虑已被索引（拥有 Embedding）的文件
     std::vector<SearchResultItem> candidates;
     if (m_sql) {
         std::list<std::string> rows;
-        // embedding column is 3rd in the select list
-        // F14-1 fix: include f_sha256 (SHA-256) so client can verify integrity
+        // embedding 列位于 select 列表第 3 位
+        // F14-1 修复: 包含 f_sha256（SHA-256），供客户端校验完整性
         m_sql->query(
             "SELECT fe.f_id, f.f_name, f.f_size, fe.embedding, f.f_sha256 "
             "FROM file_embeddings fe "
@@ -98,7 +98,7 @@ STRU_AISEARCHRS AISearchSvc::search(const std::string& query, int64_t userId) {
             "WHERE uf.u_id = ?",
             {static_cast<int64_t>(userId)}, 5, rows);
 
-        // Parse rows: each 5 strings = one file
+        // 解析结果行: 每 5 个字符串对应一个文件
         auto it = rows.begin();
         while (it != rows.end()) {
             SearchResultItem item;
@@ -113,19 +113,19 @@ STRU_AISEARCHRS AISearchSvc::search(const std::string& query, int64_t userId) {
         }
     }
 
-    // Step 3: no indexed files → fallback to filename LIKE
+    // 第 3 步: 无已索引文件 → 降级为文件名 LIKE 搜索
     if (candidates.empty()) {
         return fallbackSearch(query, userId);
     }
 
-    // Step 4: sort by similarity descending, take top 10
+    // 第 4 步: 按相似度降序排序，取前 10 条
     std::sort(candidates.begin(), candidates.end(),
         [](const SearchResultItem& a, const SearchResultItem& b) {
             return a.similarity > b.similarity;
         });
 
     STRU_AISEARCHRS rs;
-    rs.m_szResult = 0;  // AI success
+    rs.m_szResult = 0;  // AI 成功
     rs.m_nResultNum = static_cast<unsigned int>(
         std::min<size_t>(candidates.size(), 10));
     for (size_t i = 0; i < candidates.size() && i < 10; i++) {
@@ -135,7 +135,7 @@ STRU_AISEARCHRS AISearchSvc::search(const std::string& query, int64_t userId) {
         strncpy(out.m_fileInfo.m_szFileName, c.fileName.c_str(), MAXSIZE - 1);
         out.m_fileInfo.m_szFileName[MAXSIZE - 1] = '\0';
         out.m_fileInfo.m_filesize = c.fileSize;
-        // F14-1 fix: populate SHA-256 for client integrity verification
+        // F14-1 修复: 填充 SHA-256 供客户端完整性校验
         strncpy(out.m_szFileSHA256, c.fileSHA256.c_str(), sizeof(out.m_szFileSHA256) - 1);
         char buf[64];
         snprintf(buf, sizeof(buf), "相似度 %.1f%%", c.similarity * 100.0);
@@ -145,7 +145,7 @@ STRU_AISEARCHRS AISearchSvc::search(const std::string& query, int64_t userId) {
 }
 
 // ============================================================================
-// searchAsync — async variant (does embedding API call in background)
+// searchAsync — 异步版本（在后台调用 Embedding API）
 // ============================================================================
 void AISearchSvc::searchAsync(const std::string& query, int64_t userId, SearchCallback cb) {
     if (!isAIEnabled()) {
@@ -154,9 +154,9 @@ void AISearchSvc::searchAsync(const std::string& query, int64_t userId, SearchCa
     }
 
     api()->embeddingAsync(query, [query, userId, cb, this](APIBridge::EmbeddingResult embResult) {
-        // searchAsync can't currently rank against stored embeddings
-        // because we're in a callback without DB access. For now, fallback.
-        // Full async search would require dispatching to DbWorker from here.
+        // searchAsync 目前无法与已存储的 Embedding 排序，
+        // 因为当前处于无 DB 访问权限的回调中，暂时降级处理。
+        // 完整的异步搜索需要在此处派发任务给 DbWorker。
         STRU_AISEARCHRS rs;
         if (!embResult.success) {
             rs = fallbackSearch(query, userId);
@@ -169,13 +169,13 @@ void AISearchSvc::searchAsync(const std::string& query, int64_t userId, SearchCa
 }
 
 // ============================================================================
-// indexFile — compute embedding for a file and store it (called after upload)
+// indexFile — 计算文件的 Embedding 并存储（上传后调用）
 // ============================================================================
 void AISearchSvc::indexFile(int64_t fileId, const std::string& content) {
     if (!isAIEnabled()) return;
     if (content.empty()) return;
 
-    // Take first 8000 chars for embedding (well within OpenAI token limit)
+    // 取前 8000 字符用于 Embedding（远低于 OpenAI token 上限）
     std::string text = content.substr(0, 8000);
     auto embResult = api()->embedding(text);
     if (embResult.success && !embResult.embedding.empty()) {
@@ -186,7 +186,7 @@ void AISearchSvc::indexFile(int64_t fileId, const std::string& content) {
 }
 
 // ============================================================================
-// cosineSimilarity — standard cosine distance
+// cosineSimilarity — 标准余弦距离
 // ============================================================================
 double AISearchSvc::cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size() || a.empty()) return 0.0;

@@ -18,7 +18,7 @@ void SqliteState::close() {
 }
 
 void SqliteState::initSchema() {
-    // F6-1: called only internally under lock, no separate lock needed
+    // F6-1：仅在锁内被内部调用，无需单独加锁
     const char* sql =
         "CREATE TABLE IF NOT EXISTS upload_state("
         "file_id       BIGINT PRIMARY KEY,"

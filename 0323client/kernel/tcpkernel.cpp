@@ -1,4 +1,4 @@
-﻿#include "tcpkernel.h"
+#include "tcpkernel.h"
 #include "tcpclient/tcpclient.h"
 #include "Packdef.h"
 #include "ProtocolFactory.h"
@@ -116,22 +116,22 @@ void tcpkernel::dealdata(const char *szbuf, int nlen)
     }
     case _default_protocol_uploadfileblock_rs:
     {
-        // X3 fix: emit block ACK so Widget can count received blocks
+        // X3 修复：发出块 ACK，以便 Widget 统计已接收块
         auto rs = ProtocolFactory::deserializeUploadFileBlockRS(szbuf + 1, nlen - 1);
         emit signal_uploadfileblockrs(rs);
         break;
     }
     case _default_protocol_deleteshare_rs:
     {
-        // F10-4: share revocation response
+        // F10-4：分享撤销响应
         auto rs = ProtocolFactory::deserializeDeleteShareRS(szbuf + 1, nlen - 1);
         emit signal_deletesharers(rs);
         break;
     }
     case _default_protocol_searchfile_rs:
     {
-        // Deprecated: replaced by AI Search (#26/#27).
-        // Emit via aisearch signal with fallback result.
+        // 已废弃：由 AI 搜索（#26/#27）取代。
+        // 通过 aisearch 信号携带 fallback 结果发出。
         auto rs = ProtocolFactory::deserializeSearchFileRS(szbuf + 1, nlen - 1);
         STRU_AISEARCHRS aiRs = {};
         aiRs.m_nResultNum = rs.m_nFileNum;
@@ -142,10 +142,10 @@ void tcpkernel::dealdata(const char *szbuf, int nlen)
         emit signal_aisearch(aiRs);
         break;
     }
-    case _default_protocol_replicate_block_rs:
+    case _default_protocol_replicateblock_rs:
     {
-        // Peer-to-peer replication ACK — consumed server-side by NodeManager.
-        // Silently drop on client (should never arrive here).
+        // 节点间复制 ACK——由服务端 NodeManager 消费。
+        // 客户端静默丢弃（理论上不应到达此处）。
         break;
     }
     case _default_protocol_aitag_rs:

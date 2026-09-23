@@ -4,7 +4,7 @@
 
 BloomFilter::BloomFilter(size_t expectedElements, double falsePositiveRate)
 {
-    // Calculate optimal bit array size m and hash count k:
+    // 计算最优位数组大小 m 与哈希函数个数 k：
     //   m = -(n * ln(p)) / (ln(2)^2)
     //   k = (m / n) * ln(2)
 
@@ -17,7 +17,7 @@ BloomFilter::BloomFilter(size_t expectedElements, double falsePositiveRate)
     size_t numBits = static_cast<size_t>(std::ceil(m));
     size_t numHashes = static_cast<size_t>(std::ceil(k));
 
-    // Minimum 1 hash function, minimum 1 bit
+    // 至少 1 个哈希函数、至少 1 个位
     if (numBits < 1) numBits = 1;
     if (numHashes < 1) numHashes = 1;
 
@@ -34,7 +34,7 @@ BloomFilter::BloomFilter(size_t expectedElements, double falsePositiveRate)
 
 uint64_t BloomFilter::fnv1a64(const std::string& key) const
 {
-    // FNV-1a 64-bit hash
+    // FNV-1a 64 位哈希
     const uint64_t FNV_OFFSET = 14695981039346656037ULL;
     const uint64_t FNV_PRIME  = 1099511628211ULL;
 
@@ -53,7 +53,7 @@ uint64_t BloomFilter::hash1(const std::string& key) const
 
 uint64_t BloomFilter::hash2(const std::string& key) const
 {
-    // Derive second hash from the first: use the lower and upper 32 bits
+    // 由第一个哈希派生第二个哈希：使用低 32 位与高 32 位
     uint64_t h = fnv1a64(key);
     return (h >> 32) ^ (h & 0xFFFFFFFFULL);
 }
@@ -64,13 +64,13 @@ void BloomFilter::insert(const std::string& key)
     uint64_t h2 = hash2(key);
     size_t m = m_bits.size();
 
-    // Ensure h2 is odd so we don't get stuck
+    // 确保 h2 为奇数，避免位置序列陷入循环
     if (h2 % 2 == 0) {
         h2 |= 1;
     }
 
     for (size_t i = 0; i < m_hashCount; i++) {
-        // Double hashing: h(i, key) = (hash1(key) + i * hash2(key)) % m
+        // 双重哈希：h(i, key) = (hash1(key) + i * hash2(key)) % m
         size_t pos = static_cast<size_t>((h1 + i * h2) % m);
         m_bits[pos] = true;
     }
@@ -82,7 +82,7 @@ bool BloomFilter::mightContain(const std::string& key) const
     uint64_t h2 = hash2(key);
     size_t m = m_bits.size();
 
-    // Ensure h2 is odd
+    // 确保 h2 为奇数
     uint64_t h2Copy = h2;
     if (h2Copy % 2 == 0) {
         h2Copy |= 1;
@@ -91,8 +91,8 @@ bool BloomFilter::mightContain(const std::string& key) const
     for (size_t i = 0; i < m_hashCount; i++) {
         size_t pos = static_cast<size_t>((h1 + i * h2Copy) % m);
         if (!m_bits[pos]) {
-            return false;  // Definitely not in the set
+            return false;  // 一定不在集合中
         }
     }
-    return true;  // Might be in the set (possible false positive)
+    return true;  // 可能在集合中（可能误判）
 }

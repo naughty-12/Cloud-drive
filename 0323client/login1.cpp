@@ -1,7 +1,7 @@
 #include "login1.h"
 #include "ui_login1.h"
 #include "ProtocolFactory.h"
-#include "security/CryptoUtil.h"
+#include "CryptoUtil.h"
 
 login1::login1(QWidget *parent)
     : QWidget(parent)
@@ -9,7 +9,7 @@ login1::login1(QWidget *parent)
 {
     ui->setupUi(this);
     setWindowTitle("disk");
-    // Input validation: limit max length to prevent buffer overflow (F1-2 fix)
+    // 输入校验：限制最大长度，防止缓冲区溢出（F1-2 修复）
     ui->lineEdit_2ruser->setMaxLength(MAXSIZE - 1);
     ui->lineEdit_3rpassword->setMaxLength(MAXSIZE - 1);
     ui->lineEdit_7luser->setMaxLength(MAXSIZE - 1);
@@ -24,7 +24,7 @@ login1::~login1()
 
 void login1::on_pushButton_clicked()//注册
 {
-    // F2-6 fix: button debounce — prevent double-click
+    // F2-6 修复：按钮防抖，防止重复点击
     ui->pushButton->setEnabled(false);
 
     //获取注册信息
@@ -32,7 +32,7 @@ void login1::on_pushButton_clicked()//注册
     QString struser=ui->lineEdit_2ruser->text();
     QString strpassword=ui->lineEdit_3rpassword->text();
 
-    // F1-3 fix: reject empty username/password
+    // F1-3 修复：拒绝空用户名/密码
     if (struser.isEmpty() || strpassword.isEmpty()) {
         QMessageBox::warning(this, "注册", "用户名和密码不能为空");
         ui->pushButton->setEnabled(true);
@@ -42,12 +42,12 @@ void login1::on_pushButton_clicked()//注册
     //发送
     STRU_REGISTERRQ sr;
     sr.m_tel=strtel.toLongLong();
-    // F1-2 fix: use strncpy with bounds check instead of strcpy
+    // F1-2 修复：使用带边界检查的 strncpy 代替 strcpy
     strncpy(sr.m_szName, struser.toStdString().c_str(), MAXSIZE - 1);
     sr.m_szName[MAXSIZE - 1] = '\0';
 
-    // X2 fix: only send SHA-256 hash, not plaintext password
-    // F1-1 fix: hash is computed server-side; client sends hash only (not plaintext)
+    // X2 修复：只发送 SHA-256 哈希，不发送明文密码
+    // F1-1 修复：哈希在服务端计算；客户端只发送哈希（非明文）
     std::string hashed = CryptoUtil::hashPassword(strpassword.toStdString());
     strncpy(sr.m_szPasswordSHA256, hashed.c_str(), 64);
     sr.m_szPasswordSHA256[64] = '\0';
@@ -58,7 +58,7 @@ void login1::on_pushButton_clicked()//注册
 
 void login1::signal_register(const STRU_REGISTERRS& psr)
 {
-    ui->pushButton->setEnabled(true);  // F2-6: re-enable button
+    ui->pushButton->setEnabled(true);  // F2-6：重新启用按钮
     if(psr.m_szResult==_register_success)
     {
         QMessageBox::information(this,"register","注册成功");
@@ -72,13 +72,13 @@ void login1::signal_register(const STRU_REGISTERRS& psr)
 
 void login1::on_pushButton_2_clicked()//登录
 {
-    // F2-6 fix: button debounce
+    // F2-6 修复：按钮防抖
     ui->pushButton_2->setEnabled(false);
 
     QString strUser=ui->lineEdit_7luser->text();
     QString strPassword=ui->lineEdit_6password->text();
 
-    // F1-3 fix: reject empty input
+    // F1-3 修复：拒绝空输入
     if (strUser.isEmpty() || strPassword.isEmpty()) {
         QMessageBox::warning(this, "登录", "用户名和密码不能为空");
         ui->pushButton_2->setEnabled(true);
@@ -86,11 +86,11 @@ void login1::on_pushButton_2_clicked()//登录
     }
 
     STRU_LOGINRQ sl;
-    // F1-2 fix: use strncpy with bounds check
+    // F1-2 修复：使用带边界检查的 strncpy
     strncpy(sl.m_szName, strUser.toStdString().c_str(), MAXSIZE - 1);
     sl.m_szName[MAXSIZE - 1] = '\0';
 
-    // X2 fix: only send SHA-256 hash, not plaintext password
+    // X2 修复：只发送 SHA-256 哈希，不发送明文密码
     std::string hashed = CryptoUtil::hashPassword(strPassword.toStdString());
     strncpy(sl.m_szPasswordSHA256, hashed.c_str(), 64);
     sl.m_szPasswordSHA256[64] = '\0';

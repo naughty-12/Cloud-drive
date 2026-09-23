@@ -7,11 +7,11 @@ TagResult AITagService::tagFile(int64_t fileId, const std::string& content, cons
     TagResult r;
     if (!isAIEnabled()) {
         r.success = true;
-        r.tags.push_back("WeiFenLei");  // "未分类" fallback tag
+        r.tags.push_back("WeiFenLei");  // "未分类" 降级标签
         return r;
     }
 
-    // Detect file type from extension
+    // 从扩展名推断文件类型
     std::string ext;
     auto pos = fileName.rfind('.');
     if (pos != std::string::npos) ext = fileName.substr(pos + 1);
@@ -63,7 +63,7 @@ TagResult AITagService::parseTagResponse(const std::string& jsonContent) {
     try {
         auto v = aijson::Value::parse(jsonContent);
         r.success = true;
-        // Parse tags array
+        // 解析 tags 数组
         auto& tagsVal = v["tags"];
         if (tagsVal.type == aijson::Value::Array) {
             for (size_t i = 0; i < tagsVal.arrVal.size(); i++) {

@@ -10,8 +10,8 @@
 struct BlockInfo {
     int64_t fileId;
     int     blockSeq;
-    int64_t offset;     // offset in blocks.dat
-    int     length;     // actual data length
+    int64_t offset;     // 在 blocks.dat 中的偏移
+    int     length;     // 实际数据长度
 };
 
 class FileStorage {
@@ -19,39 +19,39 @@ public:
     FileStorage();
     ~FileStorage();
 
-    // Initialize: open/create blocks.dat + blocks.idx. basePath = "D:\\disk1\\"
+    // 初始化：打开/创建 blocks.dat + blocks.idx，basePath 形如 "D:\\disk1\\"
     bool init(const std::string& basePath);
 
-    // Write a block — appends to blocks.dat, records in index
-    // Returns the offset where data was written
+    // 写入一个块——追加到 blocks.dat，并在索引中记录
+    // 返回数据写入处的偏移
     int64_t writeBlock(int64_t fileId, int blockSeq, const char* data, int len);
 
-    // Read a block by file_id + block_seq
-    // Returns empty string if not found
+    // 按 file_id + block_seq 读取一个块
+    // 未找到时返回空字符串
     std::string readBlock(int64_t fileId, int blockSeq);
 
-    // Get all blocks for a file (sorted by block_seq)
+    // 获取某个文件的全部块（按 block_seq 排序）
     std::vector<BlockInfo> getFileBlocks(int64_t fileId);
 
-    // Get total file size from all blocks (sum of block lengths)
+    // 由全部块计算文件总大小（各块长度之和）
     int64_t getFileSize(int64_t fileId);
 
-    // Read arbitrary byte range from stored blocks
-    // offset: byte offset in the logical (reassembled) file
-    // length: number of bytes to read
-    // Returns the requested byte range, or empty string on error
+    // 从已存储的块中读取任意字节区间
+    // offset：逻辑（重组后）文件中的字节偏移
+    // length：要读取的字节数
+    // 返回请求的字节区间，出错时返回空字符串
     std::string readRange(int64_t fileId, int64_t offset, int length);
 
-    // Delete all blocks for a file (marks index entries as deleted)
+    // 删除某文件的全部块（将索引条目标记为已删除）
     void deleteFile(int64_t fileId);
 
-    // Create temp file for upload
+    // 为上传创建临时文件
     std::string createTempFile(int64_t fileId);
 
-    // Commit temp file → append to blocks.dat + index
+    // 提交临时文件 → 追加到 blocks.dat 与索引
     std::vector<BlockInfo> commitTempFile(int64_t fileId, const std::string& tempPath);
 
-    // Get storage stats
+    // 获取存储统计信息
     int64_t totalBlocksSize() const { return m_totalSize; }
 
 private:
@@ -63,8 +63,8 @@ private:
     std::ofstream m_blocksStream;
     int64_t m_totalSize;
 
-    // Index file format (text-based for simplicity):
-    // Each line: file_id,block_seq,offset,length
+    // 索引文件格式（为简单起见使用文本）：
+    // 每行：file_id,block_seq,offset,length
     void writeIndexEntry(int64_t fileId, int blockSeq, int64_t offset, int length);
     std::vector<BlockInfo> readAllIndex();
 };

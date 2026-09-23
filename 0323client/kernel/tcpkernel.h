@@ -21,25 +21,25 @@ signals:
     void signal_loginerrs(const STRU_LOGINRS&);
     void signal_getfilelistrs(const STRU_GETFILELISTRS&);
     void signal_uploadfileinfors(const STRU_UPLOADFILEINFORS&);
-    // Phase 2: Download, Delete, Share, Extract
+    // Phase 2：下载、删除、分享、提取
     void signal_downloadinfors(const STRU_DOWNLOADFILEINFORS&);
     void signal_downloadblockrs(const STRU_DOWNLOADFILEBLOCKRS&);
     void signal_deleters(const STRU_DELETEFILERS&);
     void signal_sharers(const STRU_SHAREFILERS&);
     void signal_getfilers(const STRU_GETFILERS&);
-    // Cluster: redirect signal
+    // 集群：重定向信号
     void signal_redirect(const STRU_REDIRECTRS&);
 
-    // Phase 2: HTTP streaming token
+    // Phase 2：HTTP 流媒体令牌
     void signal_streamtoken(const STRU_STREAMTOKENRS&);
 
-    // Upload block ACK (X3: fire-and-forget fix)
+    // 上传块 ACK（X3：发送后即忘修复）
     void signal_uploadfileblockrs(const STRU_UPLOADFILEBLOCKRS&);
-    // Delete Share (F10-4: share revocation)
+    // 删除分享（F10-4：分享撤销）
     void signal_deletesharers(const STRU_DELETESHARERS&);
-    // L2 Sparse fingerprint pre-check (upload funnel)
+    // L2 稀疏指纹预检（上传漏斗）
     void signal_sparsecheckrs(const STRU_SPARSECHECKRS&);
-    // Phase 3: AI signals
+    // Phase 3：AI 信号
     void signal_aipreview(const STRU_AIPREVIEWRS&);
     void signal_aisearch(const STRU_AISEARCHRS&);
     void signal_aitag(const STRU_AITAGRS&);

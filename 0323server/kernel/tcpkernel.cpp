@@ -2,18 +2,19 @@
 #include "../config/ConfigParser.h"
 #include <QCoreApplication>
 #include <QStringList>
+#include <QStandardPaths>   // 缺省存储根按平台解析（不写死 Windows 路径）
 #include <algorithm>
 #include <ctime>
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
-#include <random>   // CSPRNG for share code generation
-#include <set>      // F9-2: dedup AI + LIKE search results
+#include <random>   // 分享码生成所用的 CSPRNG 随机数源
+#include <set>      // F9-2：对 AI 与 LIKE 搜索结果去重
 
 Ikernel *tcpkernel::m_kernel=new tcpkernel;
 
-// Thread-safe helpers for m_lstFileInfo (accessed from IOCP workers + DbWorker thread)
+// m_lstFileInfo 的线程安全辅助函数（由 IOCP worker 线程与 DbWorker 线程访问）
 STRU_FILEINFO* tcpkernel::findFileInfoLocked(int64_t fileId) {
     std::lock_guard<std::mutex> lock(m_fileInfoMutex);
     for (auto* p : m_lstFileInfo) {
@@ -38,14 +39,14 @@ tcpkernel::tcpkernel() {
     m_aiPreview = new AIFilePreview();
     m_aiSearch = new AISearchSvc(m_sql);
     m_aiTag = new AITagService();
-    m_httpPort = 0;  // set in boolopen() from server.conf
-    m_szSystemPath[0] = '\0';  // set in boolopen() from server.conf
+    m_httpPort = 0;  // 在 boolopen() 中从 server.conf 读取
+    m_szSystemPath[0] = '\0';  // 在 boolopen() 中从 server.conf 读取
 }
 
 tcpkernel::~tcpkernel()
 {
     m_dbWorker.stop();
-    m_replWorker.stop();  // Must stop before delete m_nodeMgr — worker thread uses NodeManager
+    m_replWorker.stop();  // 必须在 delete m_nodeMgr 之前停止——worker 线程会使用 NodeManager
 
     delete m_server;
     m_server=NULL;
@@ -76,8 +77,8 @@ tcpkernel::~tcpkernel()
 bool tcpkernel::boolopen()
 {
     // ===================================================================
-    // Read ALL settings from server.conf (config-driven, no hardcodes)
-    // Config path: --config <path> argument, or "server.conf" by default
+    // 从 server.conf 读取全部配置（配置驱动，无硬编码）
+    // 配置路径：--config <path> 参数，默认使用 "server.conf"
     // ===================================================================
     std::string configPath = "server.conf";
     {
@@ -108,18 +109,35 @@ bool tcpkernel::boolopen()
     std::string mysqlPass   = jsonGetString(configJson, "mysql_password");
     std::string mysqlDb     = jsonGetString(configJson, "mysql_database");
     int         httpPort    = jsonGetInt(configJson, "http_port");
+    // 流媒体访问控制与超时（可选，缺省用代码默认值）
+    //   stream_token_ttl     ：签发性凭证有效期（秒），默认 60
+    //   stream_session_idle  ：播放会话空闲有效期（秒），默认 3600
+    //   http_send_timeout_ms ：客户端发送/接收超时（毫秒），默认 10000
+    int         streamTokenTtl    = jsonGetInt(configJson, "stream_token_ttl");
+    int         streamSessionIdle = jsonGetInt(configJson, "stream_session_idle");
+    int         httpSendTimeoutMs = jsonGetInt(configJson, "http_send_timeout_ms");
 
-    // Apply defaults for any missing values
+    // 为缺失的配置项应用默认值
     if (listenIP.empty())    listenIP    = "127.0.0.1";
     if (listenPort == 0)     listenPort  = 8899;
     if (workerCount == 0)    workerCount = 4;
-    if (storagePath.empty()) storagePath = "D:\\disk1\\";
+    if (storagePath.empty()) {
+        // 缺省存储根：交给 Qt 按平台解析，避免在业务代码里写死 Windows 路径
+        //   Windows: %APPDATA% 下的应用数据目录 + /storage/
+        //   Linux  : ~/.local/share 下的应用数据目录 + /storage/
+        // 正常部署都由 server.conf 的 storage_path 指定，这里只是兜底。
+        storagePath = (QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)
+                       + "/storage/").toStdString();
+    }
     if (mysqlHost.empty())   mysqlHost   = "localhost";
     if (mysqlUser.empty())   mysqlUser   = "root";
     if (mysqlDb.empty())     mysqlDb     = "new_schema15";
     if (httpPort == 0)       httpPort    = 8900;
+    if (streamTokenTtl <= 0)    streamTokenTtl    = 60;
+    if (streamSessionIdle <= 0) streamSessionIdle = 3600;
+    if (httpSendTimeoutMs <= 0) httpSendTimeoutMs = 10000;
 
-    // Store in members for use by handlers
+    // 保存到成员变量中，供各处理函数使用
     m_httpPort = httpPort;
     strcpy(m_szSystemPath, storagePath.c_str());
 
@@ -127,7 +145,7 @@ bool tcpkernel::boolopen()
            listenIP.c_str(), listenPort, workerCount, storagePath.c_str(),
            mysqlUser.c_str(), mysqlHost.c_str(), mysqlDb.c_str(), httpPort);
 
-    // --- AI config (optional) ---
+    // --- AI 配置（可选） ---
     {
         std::string aiSection = jsonGetObject(configJson, "ai");
         if (!aiSection.empty()) {
@@ -135,20 +153,20 @@ bool tcpkernel::boolopen()
             std::string aiBaseUrl = jsonGetString(aiSection, "base_url");
             std::string aiChatModel = jsonGetString(aiSection, "chat_model");
             std::string aiEmbedModel = jsonGetString(aiSection, "embedding_model");
-            // Optional api_key field in server.conf (env var still takes priority)
+            // server.conf 中可选的 api_key 字段（环境变量仍然优先）
             std::string aiApiKey = jsonGetString(aiSection, "api_key");
 
-            // Key priority unchanged: env var first, then optional server.conf api_key
+            // 密钥优先级不变：优先环境变量，其次 server.conf 中的可选 api_key
             const char* envKey = nullptr;
             if (aiProvider == "siliconflow" || aiProvider.empty()) {
                 envKey = std::getenv("SILICONFLOW_API_KEY");
-                if (!envKey) envKey = std::getenv("OPENAI_API_KEY");  // fallback
+                if (!envKey) envKey = std::getenv("OPENAI_API_KEY");  // 回退
             } else if (aiProvider == "openai") {
                 envKey = std::getenv("OPENAI_API_KEY");
             }
             std::string apiKey = (envKey && strlen(envKey) > 0) ? std::string(envKey) : aiApiKey;
 
-            // Ollama is a local service: no API key required; others need a key from env or config
+            // Ollama 是本地服务：无需 API Key；其他服务需从环境变量或配置获取 Key
             bool isOllama = (aiProvider == "ollama");
             if (isOllama || !apiKey.empty()) {
                 AiConfig aiCfg;
@@ -158,7 +176,7 @@ bool tcpkernel::boolopen()
                 aiCfg.chatModel = aiChatModel.empty() ? "deepseek-ai/DeepSeek-V3" : aiChatModel;
                 aiCfg.embeddingModel = aiEmbedModel.empty() ? "BAAI/bge-m3" : aiEmbedModel;
 
-                // Ollama defaults (native /api/chat + /api/embed protocol)
+                // Ollama 默认配置（原生 /api/chat + /api/embed 协议）
                 if (isOllama) {
                     if (aiBaseUrl.empty())      aiCfg.baseUrl = "http://localhost:11434";
                     if (aiChatModel.empty())    aiCfg.chatModel = "qwen2.5:7b";
@@ -170,17 +188,17 @@ bool tcpkernel::boolopen()
                 printf("WARNING: AI config present in server.conf but no API key in env or config — AI disabled\n");
             }
         }
-        // If no "ai" section in config, APIBridge already tried env vars in constructor
+        // 若配置中没有 "ai" 段，APIBridge 已在构造函数中尝试过环境变量
     }
 
-    // --- IocpServer: set callbacks before start ---
+    // --- IocpServer：启动前设置回调 ---
     m_server->setDataCallback([this](SOCKET sock, const char* data, int len) {
         this->dealData(sock, data, len);
     });
     m_server->setDisconnectCallback([this](SOCKET sock) {
-        (void)sock;  // TODO: track socket→user mapping for per-connection cleanup
-        // CRITICAL FIX: Do NOT clear ALL uploads when ANY single client disconnects.
-        // Each entry must be tied to a specific socket for scoped cleanup.
+        (void)sock;  // TODO：维护 socket→用户映射，实现按连接清理
+        // 关键修复：任一客户端断开时不得清空全部上传。
+        // 每个条目必须与具体 socket 绑定，以便按作用域清理。
     });
 
     if (!m_server->start(listenIP.c_str(), listenPort, workerCount)) {
@@ -188,17 +206,17 @@ bool tcpkernel::boolopen()
         return false;
     }
 
-    // --- MySqlWrapper: connect ---
+    // --- MySqlWrapper：连接 ---
     if (!m_sql->connect(mysqlHost.c_str(), mysqlUser.c_str(), mysqlPass.c_str(), mysqlDb.c_str())) {
         printf("MySQL connect failed\n");
         return false;
     }
 
-    // --- Bloom Filter warmup (synchronous, before DbWorker starts) ---
+    // --- Bloom Filter 预热（同步执行，在 DbWorker 启动之前） ---
     m_bloomFilter = new BloomFilter();
     warmupBloomFilter();
 
-    // --- L2 Sparse Fingerprint warmup (load known fingerprints into memory) ---
+    // --- L2 稀疏指纹预热（将已知指纹加载到内存） ---
     {
         std::list<std::string> sparseList;
         m_sql->query("SELECT f_sparse_sha256 FROM files WHERE f_sparse_sha256 != ''",
@@ -209,16 +227,16 @@ bool tcpkernel::boolopen()
         printf("Sparse fingerprints warmed up: %zu loaded\n", m_sparseFingerprints.size());
     }
 
-    // --- DbWorker: start async DB thread (after warmup to avoid conn conflict) ---
+    // --- DbWorker：启动异步数据库线程（预热后再启动，避免连接冲突） ---
     m_dbWorker.start();
 
-    // --- Cluster NodeManager ---
+    // --- 集群 NodeManager ---
     if (!m_nodeMgr->init(configPath.c_str())) {
         printf("NodeManager: init failed, running in standalone mode\n");
-        // Non-fatal — continue as standalone
+        // 非致命错误——以单机模式继续运行
     }
 
-    // --- ReplicationWorker: async cross-node block replication ---
+    // --- ReplicationWorker：跨节点异步块复制 ---
     m_replWorker.start(m_nodeMgr);
 
     // --- FileStorage ---
@@ -228,24 +246,33 @@ bool tcpkernel::boolopen()
         return false;
     }
 
-    // --- SQLite upload state for resume upload ---
+    // --- SQLite 上传状态（用于断点续传） ---
     m_uploadState = new SqliteState();
     {
         std::string uploadDbPath = storagePath + "upload_state.db";
         if (!m_uploadState->open(uploadDbPath.c_str())) {
             printf("SqliteState: failed to open database\n");
-            // Non-fatal
+            // 非致命错误
         }
     }
 
-    // Recover unfinished uploads
+    // 恢复未完成的上传
     recoverUploads();
 
-    // --- HTTP Streaming Server (video/audio/picture online playback) ---
+    // --- HTTP 流媒体服务器（视频/音频/图片在线播放） ---
+    // 先装配访问控制与会话参数，再启动（start() 之后不再改动）
+    m_httpServer->access().setTokenTtlSeconds(streamTokenTtl);
+    m_httpServer->access().setSessionIdleSeconds(streamSessionIdle);
+    m_httpServer->setSendTimeoutMs(httpSendTimeoutMs);
+    m_httpServer->setRecvTimeoutMs(httpSendTimeoutMs);
+
+    printf("[HttpServer] stream access: token_ttl=%ds session_idle=%ds send_timeout=%dms\n",
+           streamTokenTtl, streamSessionIdle, httpSendTimeoutMs);
+
     m_httpServer->start(httpPort, m_storage);
 
-    // --- Init APIBridge (reads OPENAI_API_KEY from environment) ---
-    APIBridge::instance();  // singleton init — logs whether AI is enabled
+    // --- 初始化 APIBridge（从环境变量读取 OPENAI_API_KEY） ---
+    APIBridge::instance();  // 单例初始化——记录 AI 是否启用
 
     return true;
 }
@@ -267,20 +294,21 @@ void tcpkernel::recoverUploads()
 
     printf("Recovering %zu unfinished uploads...\n", unfinished.size());
     for (auto& s : unfinished) {
-        FILE* f = fopen(s.tempPath.c_str(), "rb");
-        if (!f) {
+        // 断点续传数据直接落在 FileStorage(blocks.dat) 中（F4-5 后不再依赖临时文件），
+        // 因此以"该文件是否已有落盘块"判断能否续传，而不是检查临时文件是否存在。
+        bool hasBlocks = m_storage && !m_storage->getFileBlocks(s.fileId).empty();
+        if (!hasBlocks) {
             m_uploadState->setState(s.fileHash, s.userId, "abandoned");
-            // F6-4 fix: clean up orphan blocks from FileStorage when abandoning upload
             if (m_storage && s.fileId > 0) {
-                m_storage->deleteFile(s.fileId);
-                printf("  Abandoned+cleaned: temp file missing, deleted orphan blocks for fileId=%lld\n",
-                       s.fileId);
+                m_storage->deleteFile(s.fileId);  // 无块可续：清残留（幂等）
+                printf("  Abandoned (no stored blocks), cleaned fileId=%lld\n",
+                       (long long)s.fileId);
             } else {
-                printf("  Abandoned: temp file missing for hash %s\n", s.fileHash.c_str());
+                printf("  Abandoned (no stored blocks) for hash %s\n", s.fileHash.c_str());
             }
             continue;
         }
-        fclose(f);
+        // 已落盘的块保留：状态保持 uploading，等待客户端重新上传时按 last_offset 续传
         printf("  Resumable: user=%lld file=%lld offset=%lld/%lld\n",
                s.userId, s.fileId, s.lastOffset, s.fileSize);
     }
@@ -288,10 +316,10 @@ void tcpkernel::recoverUploads()
 
 bool tcpkernel::dealData(SOCKET sock, const char *szbuf, int nlen)
 {
-    // CRITICAL: Wrap entire dispatch in try-catch to prevent malformed packets
-    // from crashing the server. BinaryStream deserialization throws std::runtime_error
-    // on truncated/corrupt data; without this catch, an unhandled exception in an
-    // IOCP worker thread triggers std::terminate() → entire server process dies.
+    // 关键：将整个分发过程包裹在 try-catch 中，防止畸形数据包
+    // 导致服务器崩溃。BinaryStream 反序列化在数据截断或损坏时
+    // 抛出 std::runtime_error；若无此捕获，IOCP worker 线程中的
+    // 未处理异常将触发 std::terminate() → 整个服务器进程退出。
     try {
         switch(*szbuf)
         {
@@ -330,8 +358,8 @@ bool tcpkernel::dealData(SOCKET sock, const char *szbuf, int nlen)
             break;
         case _default_protocol_searchfile_rq:
         {
-            // Deprecated: old filename-search replaced by AI Search (#26)
-            // Forward to aisearch handler for backward compatibility
+            // 已弃用：旧的文件名搜索已被 AI Search（#26）取代
+            // 转发给 aisearch 处理函数以保持向后兼容
             STRU_SEARCHFILERQ oldReq = ProtocolFactory::deserializeSearchFileRQ(szbuf + 1, nlen - 1);
             STRU_AISEARCHRQ newReq = {};
             newReq.m_userId = oldReq.m_userId;
@@ -340,7 +368,7 @@ bool tcpkernel::dealData(SOCKET sock, const char *szbuf, int nlen)
             aisearchrq(sock, (const char*)pkt.data(), (int)pkt.size());
             break;
         }
-        case _default_protocol_replicate_block_rq:
+        case _default_protocol_replicateblock_rq:
             replicateblockrq(sock, szbuf, nlen);
             break;
         case _default_protocol_sparsecheck_rq:
@@ -360,11 +388,11 @@ bool tcpkernel::dealData(SOCKET sock, const char *szbuf, int nlen)
             break;
         }
     } catch (const std::exception& e) {
-        // Log the error and disconnect the offending client.
-        // The IOCP worker thread continues — server stays up.
+        // 记录错误并断开违规客户端。
+        // IOCP worker 线程继续运行——服务器保持在线。
         fprintf(stderr, "[DEALDATA] Exception from client on socket %lld: %s\n",
                 (long long)sock, e.what());
-        // Disconnect the client that sent the bad packet
+        // 断开发送错误数据包的客户端
         m_server->disconnectClient(sock);
         return false;
     } catch (...) {
@@ -378,13 +406,13 @@ bool tcpkernel::dealData(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 1. REGISTER — parameterized query + SHA-256 password hashing + async DB
+// 1. 注册 REGISTER — 参数化查询 + SHA-256 密码哈希 + 异步数据库
 // ============================================================================
 void tcpkernel::registerrq(SOCKET sock, const char *szbuf, int nlen)
 {
     STRU_REGISTERRQ req = ProtocolFactory::deserializeRegisterRQ(szbuf + 1, nlen - 1);
 
-    // F2-1 fix: m_szPassword plaintext field removed; only SHA-256 is sent
+    // F2-1 修复：移除 m_szPassword 明文密码字段；仅发送 SHA-256
     std::string hashedPassword(req.m_szPasswordSHA256);
 
     m_dbWorker.enqueue([this, req, hashedPassword, sock]() {
@@ -402,7 +430,7 @@ void tcpkernel::registerrq(SOCKET sock, const char *szbuf, int nlen)
             if (!lst.empty()) {
                 rs.m_szResult = _register_success;
                 std::string path = std::string(m_szSystemPath) + lst.front();
-                // F1-4 fix: check CreateDirectoryA return value, warn on failure
+                // F1-4 修复：检查 CreateDirectoryA 返回值，失败时告警
                 if (!CreateDirectoryA(path.c_str(), nullptr) && GetLastError() != ERROR_ALREADY_EXISTS) {
                     fprintf(stderr, "[REGISTER] WARNING: Failed to create user dir: %s (err=%lu)\n",
                             path.c_str(), GetLastError());
@@ -416,18 +444,18 @@ void tcpkernel::registerrq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 2. LOGIN — parameterized query + SHA-256 compare (plaintext fallback) + async DB
+// 2. 登录 LOGIN — 参数化查询 + SHA-256 比对（明文回退）+ 异步数据库
 // ============================================================================
 void tcpkernel::loginrq(SOCKET sock, const char *szbuf, int nlen)
 {
     STRU_LOGINRQ req = ProtocolFactory::deserializeLoginRQ(szbuf + 1, nlen - 1);
 
-    // F2-1 fix: m_szPassword plaintext field removed; only SHA-256 is sent
+    // F2-1 修复：移除 m_szPassword 明文密码字段；仅发送 SHA-256
     std::string hashedInput(req.m_szPasswordSHA256);
 
     m_dbWorker.enqueue([this, req, hashedInput, sock]() {
         STRU_LOGINRS sl;
-        // F2-2 fix: unified error — don't leak whether user exists or password is wrong
+        // F2-2 修复：统一错误提示——不泄露用户是否存在或密码是否正确
         sl.m_szResult = _login_invalid;
         sl.m_userId = 0;
 
@@ -451,7 +479,7 @@ void tcpkernel::loginrq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 3. GET FILE LIST — Bug #6 fix: JOIN user_file instead of files.u_id
+// 3. 获取文件列表 GET FILE LIST — Bug #6 修复：改用 JOIN user_file 而非 files.u_id
 // ============================================================================
 void tcpkernel::getfilelistrq(SOCKET sock, const char *szbuf, int nlen)
 {
@@ -464,10 +492,10 @@ void tcpkernel::getfilelistrq(SOCKET sock, const char *szbuf, int nlen)
         int i = 0;
         bool sentAny = false;
 
-        // Bug #6 fix: JOIN user_file to get files owned by user
-        // OLD (wrong): SELECT ... FROM files WHERE u_id=%lld
-        // NEW (correct): JOIN user_file ON f.f_id = uf.f_id WHERE uf.u_id = ?
-        // F3-5 fix: add LIMIT to prevent unbounded memory consumption
+        // Bug #6 修复：JOIN user_file 获取该用户拥有的文件
+        // 旧（错误）：SELECT ... FROM files WHERE u_id=%lld
+        // 新（正确）：JOIN user_file ON f.f_id = uf.f_id WHERE uf.u_id = ?
+        // F3-5 修复：添加 LIMIT 防止无界内存消耗
         m_sql->query(
             "SELECT f.f_name, f.f_size, f.f_uploadtime, f.f_id "
             "FROM files f JOIN user_file uf ON f.f_id = uf.f_id "
@@ -495,7 +523,7 @@ void tcpkernel::getfilelistrq(SOCKET sock, const char *szbuf, int nlen)
                 sentAny = true;
             }
         }
-        // CRITICAL FIX: send empty response when user has zero files
+        // 关键修复：用户没有文件时发送空响应
         if (!sentAny) {
             sg.m_nFileNum = 0;
             auto packet = ProtocolFactory::serializeGetFileListRS(sg);
@@ -505,14 +533,14 @@ void tcpkernel::getfilelistrq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 4. UPLOAD FILE INFO — SHA-256 resume (local) + MD5 check (async DB)
+// 4. 上传文件信息 UPLOAD FILE INFO — SHA-256 断点续传（本地）+ MD5 校验（异步数据库）
 // ============================================================================
 void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
 {
     STRU_UPLOADFILEINFORQ req = ProtocolFactory::deserializeUploadFileInfoRQ(szbuf + 1, nlen - 1);
 
     // ===================================================================
-    // Layer 1: SHA-256 based resume/instant upload check (SQLite, local)
+    // 第一层：基于 SHA-256 的断点续传/秒传检查（SQLite，本地）
     // ===================================================================
     std::string fileHash(req.m_szFileSHA256);
     if (!fileHash.empty() && m_uploadState) {
@@ -525,8 +553,9 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
                 pResume->m_filesize = state->fileSize;
                 pResume->m_userid = req.m_userId;
                 strcpy(pResume->m_szFileSHA256, fileHash.c_str());
-                FILE* tempFile = fopen(state->tempPath.c_str(), "ab");
-                pResume->m_pfile = tempFile;
+                // 续传数据直接写入 FileStorage(blocks.dat)，不再依赖临时文件（F4-5 口径）
+                pResume->m_pfile = nullptr;
+                pResume->m_resumed = true;   // 续传标记：完成校验时按已存块重算完整 SHA-256
                 addFileInfoLocked(pResume);
 
                 STRU_UPLOADFILEINFORS rs;
@@ -558,17 +587,17 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
     }
 
     // ===================================================================
-    // Layer 2: Bloom Filter pre-check (L3 in the three-tier funnel)
-    // Avoids unnecessary DB round-trips for brand-new files.
-    // If Bloom says "definitely not in DB", we skip the MySQL flash-upload
-    // query entirely and jump straight to normal upload path.
+    // 第二层：Bloom Filter 预检（三层漏斗中的 L3）
+    // 避免全新文件产生不必要的数据库往返。
+    // 若 Bloom 判定"数据库中肯定不存在"，则完全跳过 MySQL 秒传
+    // 查询，直接进入普通上传路径。
     // ===================================================================
     bool bloomHit = false;
     if (m_bloomFilter && !fileHash.empty()) {
         bloomHit = m_bloomFilter->mightContain(fileHash);
         if (!bloomHit) {
-            // Bloom Filter says "definitely not in DB" — skip MySQL flash check,
-            // go straight to normal upload.  This is the ~1μs fast path for new files.
+            // Bloom Filter 判定"数据库中肯定不存在"——跳过 MySQL 秒传检查，
+            // 直接进入普通上传。这是新文件的约 1μs 快速路径。
             qDebug() << "[Bloom L3] MISS — skipping MySQL flash check, proceeding to normal upload";
         } else {
             qDebug() << "[Bloom L3] HIT — will verify with MySQL query";
@@ -576,9 +605,9 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
     }
 
     // ===================================================================
-    // Layer 3: MD5-based check in MySQL (async via DbWorker)
+    // 第三层：MySQL 中的 MD5 校验（通过 DbWorker 异步执行）
     // ===================================================================
-    // Capture everything needed inside the lambda by value
+    // 在 lambda 中按值捕获所需的一切
     std::string sha256(req.m_szFileSHA256);
     std::string fname(req.m_fileInfo.m_szFileName);
     int64_t userId = req.m_userId;
@@ -594,11 +623,11 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
         su.m_pos = 0;
         su.m_fileID = 0;
 
-        // Only run MySQL flash-upload check if Bloom Filter was hit or unavailable.
-        // If Bloom says "definitely not", skip the DB query and go straight to normal upload.
+        // 仅当 Bloom Filter 命中或不可用时才执行 MySQL 秒传检查。
+        // 若 Bloom 判定"肯定不存在"，则跳过数据库查询，直接进入普通上传。
         if (bloomHit) {
-        // Bug #6 fix: JOIN user_file to check file ownership (files has no u_id)
-        // F5-4 fix: hash-only match — same content, different filename → still flash
+        // Bug #6 修复：JOIN user_file 检查文件所有权（files 表没有 u_id）
+        // F5-4 修复：仅按哈希匹配——内容相同、文件名不同也能秒传
         m_sql->query(
             "SELECT uf.u_id, f.f_id FROM files f "
             "JOIN user_file uf ON f.f_id = uf.f_id "
@@ -612,23 +641,23 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
             long long fileId = atoll(strFileId.c_str());
 
             if (existingUserId == userId) {
-                // Same user — already uploaded (or resume)
+                // 同一用户——已上传（或断点续传）
                 su.m_szResult = _uploadfile_isuploaded;
             } else {
-                // Different user — flash upload (秒传)
+                // 不同用户——秒传（flash upload）
                 su.m_szResult = _uploadfile_flash;
 
-                // Increment reference count
+                // 引用计数加一
                 m_sql->execute(
                     "UPDATE files SET fcount = fcount + 1 WHERE files.f_sha256=?",
                     {sha256});
 
-                // Create user-file mapping
+                // 创建用户-文件映射
                 m_sql->execute(
                     "INSERT INTO user_file(u_id,f_id) VALUES(?,?)",
                     {userId, fileId});
 
-                // Mark as committed in SQLite for future lookups
+                // 在 SQLite 中标记为已提交，供后续查询使用
                 if (m_uploadState && !fileHash.empty()) {
                     UploadState us;
                     us.fileId = fileId;
@@ -644,34 +673,34 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
                 }
             }
 
-            // Send flash/already-uploaded response
+            // 发送秒传/已上传响应
             auto packet = ProtocolFactory::serializeUploadFileInfoRS(su);
             m_server->sendData(sock, (const char*)packet.data(), (int)packet.size());
             return;
         }
-        } // end if (bloomHit) — Bloom miss falls through to normal upload
+        } // if (bloomHit) 结束——Bloom 未命中则落入普通上传流程
 
         // ===============================================================
-        // File NOT found (or Bloom miss) — NORMAL upload
+        // 文件不存在（或 Bloom 未命中）——普通上传
         // ===============================================================
         su.m_szResult = _uploadfile_normal;
 
-        // Create file path (F4-3 fix: path separator between userId and filename)
+        // 构造文件路径（F4-3 修复：userId 与文件名之间加路径分隔符）
         char szfilepath[260] = {0};
-        sprintf(szfilepath, "%s%lld\\%s", m_szSystemPath, userId, fname.c_str());
-        // F4-5 fix: removed dead fopen — data goes to FileStorage, not this empty file
-        // Ensure the user directory exists
+        snprintf(szfilepath, sizeof(szfilepath), "%s%lld\\%s", m_szSystemPath, userId, fname.c_str());
+        // F4-5 修复：移除无效的 fopen——数据写入 FileStorage，而非这个空文件
+        // 确保用户目录存在
         std::string userDir = std::string(m_szSystemPath) + std::to_string(userId);
         CreateDirectoryA(userDir.c_str(), nullptr);
 
-        // Insert file metadata into DB (parameterized)
+        // 将文件元数据插入数据库（参数化）
         long long fileid = 0;
         bool inserted = m_sql->execute(
             "INSERT INTO files(f_name,f_size,f_uploadtime,f_sha256,f_path) VALUES(?,?,?,?,?)",
             {fname, fileSize, uploadTime, sha256, std::string(szfilepath)});
 
         if (inserted) {
-            // Get the assigned file ID
+            // 获取分配的文件 ID
             std::list<std::string> idLst;
             m_sql->query(
                 "SELECT f_id FROM files WHERE f_sha256=? AND f_name=?",
@@ -680,8 +709,8 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
                 fileid = atoll(idLst.front().c_str());
                 su.m_fileID = fileid;
 
-                // F16-2 fix: redirect check — if this file should live on a peer node,
-                // clean up local DB records and tell the client to reconnect.
+                // F16-2 修复：重定向检查——若该文件应存放到对等节点，
+                // 则清理本地数据库记录并通知客户端重新连接。
                 if (m_nodeMgr && fileid > 0 && !m_nodeMgr->isLocal(fileid)) {
                     m_sql->execute("DELETE FROM files WHERE f_id=?", {fileid});
                     fprintf(stderr, "[Upload] Redirecting fileId=%lld to peer node\n", (long long)fileid);
@@ -693,27 +722,27 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
                     redirect.m_szResult = _redirect_permanent;
                     auto pkt = ProtocolFactory::serializeRedirectRS(redirect);
                     m_server->sendData(sock, (const char*)pkt.data(), (int)pkt.size());
-                    return;  // Don't proceed — client will re-upload to correct node
+                    return;  // 不再继续——客户端将向正确的节点重新上传
                 }
 
-                // Create user-file mapping
+                // 创建用户-文件映射
                 m_sql->execute(
                     "INSERT INTO user_file(u_id,f_id) VALUES(?,?)",
                     {userId, fileid});
             }
         }
 
-        // Create STRU_FILEINFO for tracking upload progress
+        // 创建 STRU_FILEINFO 以跟踪上传进度
         STRU_FILEINFO *p = new STRU_FILEINFO;
         p->m_fileid = fileid;
         p->m_filepos = 0;
         p->m_filesize = fileSize;
-        p->m_pfile = nullptr;  // F4-5: no empty file — data goes to FileStorage
+        p->m_pfile = nullptr;  // F4-5：不创建空文件——数据写入 FileStorage
         p->m_userid = userId;
         strcpy(p->m_szFileSHA256, fileHash.c_str());
         addFileInfoLocked(p);
 
-        // Create SQLite upload state for resume tracking
+        // 创建 SQLite 上传状态，用于断点续传跟踪
         if (m_uploadState && !fileHash.empty()) {
             UploadState us;
             us.fileId = fileid;
@@ -734,21 +763,21 @@ void tcpkernel::uploadfileinforq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 5. UPLOAD FILE BLOCK — FileStorage I/O only (no DB), fix sizeof bug
+// 5. 上传文件块 UPLOAD FILE BLOCK — 仅 FileStorage I/O（不涉及数据库），修复 sizeof bug
 // ============================================================================
 void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
 {
     STRU_UPLOADFILEBLOCKRQ req = ProtocolFactory::deserializeUploadFileBlockRQ(szbuf + 1, nlen - 1);
 
-    // Find the file info in the upload list (thread-safe via mutex)
+    // 在上传列表中查找文件信息（通过互斥锁保证线程安全）
     STRU_FILEINFO* p = findFileInfoLocked(req.m_fileID);
     if (!p) return;
 
-    // Validate block size — prevent heap buffer overread
+    // 校验块大小——防止堆缓冲区越界读取
     int actualBlockSize = (int)req.m_fileblocksize;
     if (actualBlockSize <= 0 || actualBlockSize > MAXFILECONTENT) return;
 
-    // Write block via FileStorage (append-write engine)
+    // 通过 FileStorage 写入数据块（追加写引擎）
     int blockSeq = (int)(p->m_filepos / MAXFILECONTENT);
     int64_t offset = m_storage->writeBlock(req.m_fileID, blockSeq,
                                            req.m_szFileContent,
@@ -756,7 +785,7 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
     if (offset >= 0) {
         p->m_filepos += req.m_fileblocksize;
 
-        // Replicate to peer nodes (async — enqueue and return, no IOCP blocking)
+        // 复制到对等节点（异步——入队后立即返回，不阻塞 IOCP）
         {
             ReplicationTask task;
             task.fileId = req.m_fileID;
@@ -767,13 +796,13 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
             task.maxRetries = 3;
             bool queued = m_replWorker.enqueue(std::move(task));
             if (!queued) {
-                // F16-5 fix: log warning when replication queue is full
+                // F16-5 修复：复制队列满时记录告警日志
                 fprintf(stderr, "[ReplicationWorker] WARNING: queue full — block seq=%d for file=%lld not replicated\n",
                         blockSeq, (long long)req.m_fileID);
             }
         }
 
-        // F4-2 fix: incremental SHA-256 computation as blocks arrive
+        // F4-2 修复：随数据块到达进行增量 SHA-256 计算
         if (!p->m_sha256Active) {
             CryptoUtil::sha256Init(&p->m_sha256Ctx);
             p->m_sha256Active = true;
@@ -782,15 +811,15 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
             reinterpret_cast<const uint8_t*>(req.m_szFileContent),
             static_cast<size_t>(actualBlockSize));
 
-        // Update resume state after each successful block
+        // 每成功写入一个数据块后更新续传状态
         if (m_uploadState && strlen(p->m_szFileSHA256) > 0) {
-            // F6-5 fix: completedBlocks counts actual successfully written blocks
+            // F6-5 修复：completedBlocks 统计实际成功写入的数据块数
             int completedBlocks = blockSeq + 1;
             m_uploadState->updateProgress(p->m_szFileSHA256, req.m_userId,
                                           completedBlocks, p->m_filepos);
         }
 
-        // Send UploadFileBlockRS to ack this block
+        // 发送 UploadFileBlockRS 确认该数据块
         STRU_UPLOADFILEBLOCKRS blockRs;
         blockRs.m_fileID = req.m_fileID;
         blockRs.m_pos = p->m_filepos;
@@ -798,32 +827,77 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
         auto blockPacket = ProtocolFactory::serializeUploadFileBlockRS(blockRs);
         m_server->sendData(sock, (const char*)blockPacket.data(), (int)blockPacket.size());
 
-        // Check if upload is complete
+        // 检查上传是否完成
         if (p->m_filepos >= p->m_filesize) {
-            // F6-2 fix: set "verifying" state before SHA-256 validation
+            // F6-2 修复：在 SHA-256 校验前将状态置为 "verifying"
             std::string expectedHash(p->m_szFileSHA256);
             bool hashOk = true;
+            bool resumedOk = false;
+            std::string resumedHash;
 
             if (m_uploadState && strlen(p->m_szFileSHA256) > 0) {
                 m_uploadState->setState(p->m_szFileSHA256, req.m_userId, "verifying");
             }
 
-            // F4-2 fix: verify incremental SHA-256 matches expected hash
-            if (p->m_sha256Active && !expectedHash.empty()) {
+            // F4-2 修复：校验增量 SHA-256 与期望哈希一致（续传时跳过——见下方 F4-2b）
+            if (!p->m_resumed && p->m_sha256Active && !expectedHash.empty()) {
                 std::string actualHash = CryptoUtil::sha256FinalHex(&p->m_sha256Ctx);
                 hashOk = (actualHash == expectedHash);
             }
 
-            // F4-2 fix: if expectedHash was empty (L2 "definitely new" path →
-            // client skipped full SHA-256), derive it from the server-side
-            // incremental SHA-256 context that was built up as blocks arrived.
+            // F4-2b 修复：断点/重启后续传时，增量上下文只覆盖本次会话收到的块，
+            // 不能代表整个文件——改为读回 blocks.dat 中已落盘的块重算完整 SHA-256。
+            if (p->m_resumed && p->m_filepos > 0) {
+                bool readOk = true;
+                CryptoUtil::Sha256Ctx vctx;
+                CryptoUtil::sha256Init(&vctx);
+                int totalBlk = (int)((p->m_filesize + MAXFILECONTENT - 1) / MAXFILECONTENT);
+                for (int seq = 0; seq < totalBlk; ++seq) {
+                    std::string blk = m_storage->readBlock(p->m_fileid, seq);
+                    if (blk.empty()) { readOk = false; break; }
+                    CryptoUtil::sha256Update(&vctx,
+                        reinterpret_cast<const uint8_t*>(blk.data()), blk.size());
+                }
+                if (!readOk) {
+                    hashOk = false;
+                } else {
+                    resumedOk = true;
+                    resumedHash = CryptoUtil::sha256FinalHex(&vctx);
+                    if (!expectedHash.empty()) {
+                        hashOk = (resumedHash == expectedHash);
+                    }
+                }
+            }
+
+            // F4-2 修复：若 expectedHash 为空（L2"肯定是新文件"路径——
+            // 客户端跳过了完整 SHA-256 计算），则根据服务端在数据块
+            // 到达过程中累积的增量 SHA-256 上下文推导出真实哈希。
             std::string finalHash = expectedHash;
-            if (finalHash.empty() && p->m_sha256Active) {
+            if (!p->m_resumed && finalHash.empty() && p->m_sha256Active) {
                 finalHash = CryptoUtil::sha256FinalHex(&p->m_sha256Ctx);
-                // Backfill the in-memory struct so downstream code sees the real hash
+                // 回填内存中的结构体，使下游代码能看到真实哈希
                 strncpy(p->m_szFileSHA256, finalHash.c_str(), sizeof(p->m_szFileSHA256) - 1);
-                // Create SQLite committed record (was skipped in uploadfileinforq
-                // because fileHash was empty at that point)
+                // 创建 SQLite 已提交记录（此前在 uploadfileinforq 中
+                // 因 fileHash 为空而被跳过）
+                if (m_uploadState) {
+                    UploadState us;
+                    us.fileId = p->m_fileid;
+                    us.userId = p->m_userid;
+                    us.fileSize = p->m_filesize;
+                    us.totalBlocks = (int)((p->m_filesize + MAXFILECONTENT - 1) / MAXFILECONTENT);
+                    us.completedBlocks = us.totalBlocks;
+                    us.lastOffset = p->m_filesize;
+                    us.tempPath = "";
+                    us.fileHash = finalHash;
+                    us.state = "committed";
+                    m_uploadState->createState(us);
+                }
+            }
+
+            if (p->m_resumed && resumedOk && expectedHash.empty()) {
+                // 续传且客户端未提供完整哈希（L2 新文件路径）：用按块重算的哈希回填。
+                finalHash = resumedHash;
+                strncpy(p->m_szFileSHA256, finalHash.c_str(), sizeof(p->m_szFileSHA256) - 1);
                 if (m_uploadState) {
                     UploadState us;
                     us.fileId = p->m_fileid;
@@ -840,17 +914,17 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
             }
 
             if (hashOk) {
-                // Mark as committed for future instant upload detection
+                // 标记为已提交，供后续秒传检测使用
                 if (m_uploadState && strlen(p->m_szFileSHA256) > 0) {
                     m_uploadState->setState(p->m_szFileSHA256, req.m_userId, "committed");
                 }
-                // Update Bloom Filter with new file hash for L3 instant upload
+                // 将新文件哈希加入 Bloom Filter，用于 L3 秒传
                 if (m_bloomFilter && strlen(p->m_szFileSHA256) > 0) {
                     m_bloomFilter->insert(std::string(p->m_szFileSHA256));
                 }
 
-                // Backfill DB with real SHA-256 if L2 "definitely new" path
-                // wrote an empty placeholder earlier in uploadfileinforq.
+                // 若 L2"肯定是新文件"路径在 uploadfileinforq 中写入了
+                // 空的占位哈希，此处用真实 SHA-256 回填数据库。
                 if (!finalHash.empty() && finalHash != expectedHash) {
                     m_dbWorker.enqueue([this, fileId = p->m_fileid, finalHash]() {
                         m_sql->execute(
@@ -859,7 +933,7 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                     });
                 }
 
-                // --- Compute + store sparse fingerprint for L2 pre-check ---
+                // --- 计算并存储稀疏指纹，用于 L2 预检 ---
                 {
                     std::string head = m_storage->readBlock(p->m_fileid, 0);
                     int lastBlock = (int)((p->m_filesize - 1) / MAXFILECONTENT);
@@ -870,7 +944,7 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                         std::lock_guard<std::mutex> lock(m_sparseFpMutex);
                         m_sparseFingerprints.insert(sparseFp);
                     }
-                    // Store in DB for warmup after restart
+                    // 存入数据库，便于重启后预热
                     m_dbWorker.enqueue([this, fileId = p->m_fileid, sparseFp]() {
                         m_sql->execute(
                             "UPDATE files SET f_sparse_sha256=? WHERE f_id=?",
@@ -878,13 +952,13 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                     });
                 }
 
-                // F4-5 fix: m_pfile may be nullptr (data goes to FileStorage, not disk file)
+                // F4-5 修复：m_pfile 可能为 nullptr（数据写入 FileStorage，而非磁盘文件）
                 if (p->m_pfile) {
                     fclose(p->m_pfile);
                     p->m_pfile = nullptr;
                 }
 
-                // --- Trigger async AI indexing + tagging after upload ---
+                // --- 上传完成后触发异步 AI 索引与打标签 ---
                 int64_t completedFileId = p->m_fileid;
                 int64_t completedUserId = p->m_userid;
                 m_dbWorker.enqueue([this, completedFileId, completedUserId]() {
@@ -918,7 +992,7 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                                                     "status=IF(use_count >= 3, 'active', status)",
                                                     {safeTag});
                                             }
-                                            // F15-3 fix: persist new tag suggestions to tag_pool
+                                            // F15-3 修复：将新标签建议持久化到 tag_pool
                                             for (const auto& newTag : tagResult.newTagSuggestions) {
                                                 std::string safeTag = newTag.size() > 99 ? newTag.substr(0, 99) : newTag;
                                                 m_sql->execute(
@@ -933,17 +1007,17 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                     }
                 });
             } else {
-                // F4-2/F6-2 fix: SHA-256 verification FAILED
+                // F4-2/F6-2 修复：SHA-256 校验失败
                 fprintf(stderr, "[UPLOAD] SHA-256 verification FAILED for fileId=%lld hash=%s\n",
                         (long long)p->m_fileid, expectedHash.c_str());
                 if (m_uploadState && strlen(p->m_szFileSHA256) > 0) {
                     m_uploadState->setState(p->m_szFileSHA256, req.m_userId, "verification_failed");
                 }
-                // Clean up corrupted FileStorage blocks
+                // 清理损坏的 FileStorage 数据块
                 if (m_storage) {
                     m_storage->deleteFile(p->m_fileid);
                 }
-                // Clean up DB records for this failed upload
+                // 清理本次失败上传的数据库记录
                 m_dbWorker.enqueue([this, fileId = p->m_fileid, userId = p->m_userid]() {
                     m_sql->begin();
                     m_sql->execute("DELETE FROM user_file WHERE u_id=? AND f_id=?", {userId, fileId});
@@ -952,7 +1026,7 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                 });
             }
 
-            // Erase from list under lock
+            // 在锁保护下从列表中移除
             {
                 std::lock_guard<std::mutex> lock(m_fileInfoMutex);
                 auto it = std::find(m_lstFileInfo.begin(), m_lstFileInfo.end(), p);
@@ -964,24 +1038,24 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 5.5 SPARSE FINGERPRINT PRE-CHECK — L2 in three-tier upload funnel
+// 5.5 稀疏指纹预检 SPARSE FINGERPRINT PRE-CHECK — 三层上传漏斗中的 L2
 // ============================================================================
-// Client sends sparse fingerprint (head 4KB + tail 4KB + file size, SHA-256'd).
-// Server checks in-memory set. If "definitely new", client can skip computing
-// the full SHA-256 of the entire file (big win for large files).
+// 客户端发送稀疏指纹（文件头 4KB + 文件尾 4KB + 文件大小，经 SHA-256 处理）。
+// 服务端在内存集合中查找。若判定"肯定是新文件"，客户端可跳过
+// 对整个文件计算完整 SHA-256（对大型文件收益显著）。
 void tcpkernel::sparsecheckrq(SOCKET sock, const char* szbuf, int nlen)
 {
     auto req = ProtocolFactory::deserializeSparseCheckRQ(szbuf + 1, nlen - 1);
 
     STRU_SPARSECHECKRS rs;
-    // Check in-memory set: O(1) lookup with mutex protection
+    // 在内存集合中查找：互斥锁保护下的 O(1) 查询
     std::string fp(req.m_szSparseFingerprint);
     {
         std::lock_guard<std::mutex> lock(m_sparseFpMutex);
         if (!fp.empty() && m_sparseFingerprints.count(fp)) {
-            rs.m_szResult = 1;  // might exist → client should compute full SHA-256
+            rs.m_szResult = 1;  // 可能存在 → 客户端应计算完整 SHA-256
         } else {
-            rs.m_szResult = 0;  // definitely new → skip full SHA-256
+            rs.m_szResult = 0;  // 肯定是新文件 → 跳过完整 SHA-256
         }
     }
     auto pkt = ProtocolFactory::serializeSparseCheckRS(rs);
@@ -989,13 +1063,13 @@ void tcpkernel::sparsecheckrq(SOCKET sock, const char* szbuf, int nlen)
 }
 
 // ============================================================================
-// 6. DOWNLOAD FILE INFO — Bug #6 fix: JOIN user_file, parameterized query
+// 6. 下载文件信息 DOWNLOAD FILE INFO — Bug #6 修复：JOIN user_file，参数化查询
 // ============================================================================
 void tcpkernel::downloadfileinforq(SOCKET sock, const char *szbuf, int nlen)
 {
     auto req = ProtocolFactory::deserializeDownloadFileInfoRQ(szbuf + 1, nlen - 1);
 
-    // --- Redirect Check (only when fileID is known) ---
+    // --- 重定向检查（仅当 fileID 已知时） ---
     if (m_nodeMgr && req.m_fileID > 0 && !m_nodeMgr->isLocal(req.m_fileID)) {
         STRU_REDIRECTRS redirect;
         strncpy(redirect.m_szRedirectIP, m_nodeMgr->getRedirectIP(req.m_fileID).c_str(), 15);
@@ -1012,16 +1086,16 @@ void tcpkernel::downloadfileinforq(SOCKET sock, const char *szbuf, int nlen)
     int64_t userId = req.m_userId;
 
     m_dbWorker.enqueue([this, sock, req, fname, userId]() {
-        // F7-2 fix: zero-initialize to avoid sending uninitialized stack memory.
-        // NOTE: `= {}` does NOT zero members because this struct has a user-provided
-        // default constructor (value-init only calls that ctor, leaving fields unset),
-        // so we memset explicitly and then restore m_ntype.
+        // F7-2 修复：零初始化，避免发送未初始化的栈内存。
+        // 注意：`= {}` 不会清零成员，因为该结构体有用户自定义的
+        // 默认构造函数（值初始化只会调用该构造函数，字段仍保持未设置状态），
+        // 因此这里显式 memset，随后恢复 m_ntype。
         STRU_DOWNLOADFILEINFORS rs;
         memset(&rs, 0, sizeof(rs));
         rs.m_ntype = static_cast<char>(_default_protocol_downloadfileinfo_rs);
         rs.m_nBlockSize = MAXFILECONTENT;
 
-        // Bug #6 fix: JOIN user_file — files table has no u_id column
+        // Bug #6 修复：JOIN user_file——files 表没有 u_id 列
         std::list<std::string> lst;
         m_sql->query(
             "SELECT f.f_id, f.f_size, f.f_sha256 FROM files f "
@@ -1032,7 +1106,7 @@ void tcpkernel::downloadfileinforq(SOCKET sock, const char *szbuf, int nlen)
         if (lst.size() >= 3) {
             rs.m_fileID = atoll(lst.front().c_str()); lst.pop_front();
             rs.m_fileSize = atoll(lst.front().c_str()); lst.pop_front();
-            // F7-2: populate SHA-256 so client can verify integrity after download
+            // F7-2：填充 SHA-256，便于客户端下载后校验完整性
             std::string sha256 = lst.front(); lst.pop_front();
             strncpy(rs.m_szFileSHA256, sha256.c_str(), sizeof(rs.m_szFileSHA256) - 1);
             rs.m_nBlockNum = (rs.m_fileSize > 0) ?
@@ -1046,7 +1120,7 @@ void tcpkernel::downloadfileinforq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 7. DOWNLOAD FILE BLOCK — parameterized query for file path lookup
+// 7. 下载文件块 DOWNLOAD FILE BLOCK — 参数化查询文件路径
 // ============================================================================
 void tcpkernel::downloadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
 {
@@ -1059,7 +1133,7 @@ void tcpkernel::downloadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
         rs.m_fileblocksize = 0;
         rs.m_szResult = 0;
 
-        // Authorization: verify this user owns the file
+        // 鉴权：验证该用户拥有此文件
         std::list<std::string> authLst;
         m_sql->query("SELECT 1 FROM user_file WHERE u_id=? AND f_id=?",
             {req.m_userId, req.m_fileID}, 1, authLst);
@@ -1069,7 +1143,7 @@ void tcpkernel::downloadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
             return;
         }
 
-        // Read from FileStorage (blocks.dat) instead of legacy file path
+        // 从 FileStorage（blocks.dat）读取，而非遗留的文件路径
         int blockSeq = (int)(req.m_pos / MAXFILECONTENT);
         std::string blockData = m_storage->readBlock(req.m_fileID, blockSeq);
         if (!blockData.empty()) {
@@ -1085,7 +1159,7 @@ void tcpkernel::downloadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 8. DELETE FILE — Bug #6 fix: use user_file JOIN for ownership check
+// 8. 删除文件 DELETE FILE — Bug #6 修复：使用 user_file JOIN 做所有权检查
 // ============================================================================
 void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
 {
@@ -1093,7 +1167,7 @@ void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
     int64_t userId = req.m_userId;
     int64_t fileId = req.m_fileID;
 
-    // --- Redirect Check ---
+    // --- 重定向检查 ---
     if (m_nodeMgr && !m_nodeMgr->isLocal(fileId)) {
         STRU_REDIRECTRS redirect;
         strncpy(redirect.m_szRedirectIP, m_nodeMgr->getRedirectIP(fileId).c_str(), 15);
@@ -1111,7 +1185,7 @@ void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
         rs.m_fileID = fileId;
         rs.m_szResult = 0;
 
-        // Bug #6 fix: check ownership via user_file JOIN (not files.u_id)
+        // Bug #6 修复：通过 user_file JOIN 检查所有权（而非 files.u_id）
         std::list<std::string> lst;
         m_sql->query(
             "SELECT uf.f_id FROM user_file uf "
@@ -1120,10 +1194,10 @@ void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
             {userId, fileId}, 1, lst);
 
         if (!lst.empty()) {
-            // F8-2 fix: wrap delete operations in a transaction for atomicity
+            // F8-2 修复：将删除操作包裹在事务中以保证原子性
             m_sql->begin();
 
-            // F8-3 fix: check return values — only report success if both queries succeed
+            // F8-3 修复：检查返回值——仅当两条查询都成功时才报告成功
             bool ok1 = m_sql->execute(
                 "UPDATE files SET fcount = fcount - 1 WHERE f_id = ? AND fcount > 0",
                 {fileId});
@@ -1139,13 +1213,13 @@ void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
                 m_sql->rollback();
             }
 
-            // --- Orphan cleanup: if fcount reaches 0, clean up all related data ---
+            // --- 孤儿数据清理：当 fcount 归零时，清理所有相关数据 ---
             if (ok1 && ok2) {
                 std::list<std::string> fcntLst;
                 m_sql->query("SELECT fcount FROM files WHERE f_id = ?", {fileId}, 1, fcntLst);
                 if (!fcntLst.empty() && atoll(fcntLst.front().c_str()) == 0) {
                     m_sql->begin();
-                    // Delete dependent DB rows (CASCADE would do this if FKs were defined)
+                    // 删除依赖的数据库行（若定义了外键，CASCADE 本可完成此操作）
                     bool cascadeOk = true;
                     cascadeOk = m_sql->execute("DELETE FROM file_embeddings WHERE f_id = ?", {fileId}) && cascadeOk;
                     cascadeOk = m_sql->execute("DELETE FROM file_tags WHERE f_id = ?", {fileId}) && cascadeOk;
@@ -1154,7 +1228,7 @@ void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
                     cascadeOk = m_sql->execute("DELETE FROM files WHERE f_id = ?", {fileId}) && cascadeOk;
                     if (cascadeOk) {
                         m_sql->commit();
-                        // Mark blocks in FileStorage as deleted (marks index entries with # prefix)
+                        // 将 FileStorage 中的数据块标记为已删除（以 # 前缀标记索引条目）
                         if (m_storage) {
                             m_storage->deleteFile(fileId);
                         }
@@ -1171,7 +1245,7 @@ void tcpkernel::deletefilerq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 9. SHARE FILE — parameterized insert + executeRaw for DDL
+// 9. 分享文件 SHARE FILE — 参数化插入 + 使用 executeRaw 执行 DDL
 // ============================================================================
 void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
 {
@@ -1179,7 +1253,7 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
     int64_t userId = req.m_userId;
     int64_t fileId = req.m_fileID;
 
-    // --- Redirect Check ---
+    // --- 重定向检查 ---
     if (m_nodeMgr && !m_nodeMgr->isLocal(fileId)) {
         STRU_REDIRECTRS redirect;
         strncpy(redirect.m_szRedirectIP, m_nodeMgr->getRedirectIP(fileId).c_str(), 15);
@@ -1198,19 +1272,19 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
         rs.m_szResult = 0;
         memset(rs.m_szShareCode, 0, sizeof(rs.m_szShareCode));
 
-        // --- Authorization: verify user owns the file ---
+        // --- 鉴权：验证用户拥有该文件 ---
         std::list<std::string> ownLst;
         m_sql->query(
             "SELECT 1 FROM user_file WHERE u_id=? AND f_id=?",
             {userId, fileId}, 1, ownLst);
         if (ownLst.empty()) {
-            // User does not own this file — reject
+            // 用户不拥有此文件——拒绝
             auto packet = ProtocolFactory::serializeShareFileRS(rs);
             m_server->sendData(sock, (const char*)packet.data(), (int)packet.size());
             return;
         }
 
-        // F10-5: duplicate share detection — return existing code if already shared
+        // F10-5：重复分享检测——已分享则返回已有分享码
         {
             std::list<std::string> existLst;
             m_sql->query(
@@ -1225,7 +1299,7 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
             }
         }
 
-        // Create share_links table if not exists (DDL — use raw execute)
+        // 若 share_links 表不存在则创建（DDL——使用原始执行接口）
         m_sql->executeRaw(
             "CREATE TABLE IF NOT EXISTS share_links("
             "share_code CHAR(8) PRIMARY KEY,"
@@ -1234,10 +1308,10 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
             "created_at DATETIME DEFAULT NOW(),"
             "expires_at DATETIME NULL)");
 
-        // Generate a unique share code with collision retry.
-        // std::random_device is deterministic on MinGW (constant code → the 2nd
-        // share collided on the share_code PK), so use a deterministic mix of
-        // wall-clock time + fileId + a per-process monotonic counter + retry round.
+        // 生成唯一分享码，冲突时重试。
+        // std::random_device 在 MinGW 上具有确定性（生成的分享码恒定，
+        // 导致第二个分享在 share_code 主键上冲突），因此改用
+        // 墙钟时间 + fileId + 进程内单调计数器 + 重试轮次的确定性混合。
         static unsigned int s_shareSeq = 0;
         std::string shareCode;
         bool inserted = false;
@@ -1248,7 +1322,7 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
                 ^ (++s_shareSeq)
                 ^ (unsigned int)(retry * 0xDEADBEEFu);
             char code[9];
-            sprintf(code, "%08x", rnd);
+            snprintf(code, sizeof(code), "%08x", rnd);
             shareCode = code;
             strcpy(rs.m_szShareCode, shareCode.c_str());
 
@@ -1265,7 +1339,7 @@ void tcpkernel::sharefilerq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 10. DELETE SHARE / Revocation — F10-4 fix
+// 10. 删除分享 DELETE SHARE / 撤销 — F10-4 修复
 // ============================================================================
 void tcpkernel::deletesharerq(SOCKET sock, const char *szbuf, int nlen)
 {
@@ -1278,7 +1352,7 @@ void tcpkernel::deletesharerq(SOCKET sock, const char *szbuf, int nlen)
         rs.m_fileID = fileId;
         rs.m_szResult = 0;
 
-        // Delete the share link if owned by this user
+        // 若该用户拥有此分享链接则删除
         bool ok = m_sql->execute(
             "DELETE FROM share_links WHERE f_id=? AND u_id=?",
             {fileId, userId});
@@ -1291,7 +1365,7 @@ void tcpkernel::deletesharerq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// 10. GET FILE / EXTRACT — parameterized queries     (renumbered to 11)
+// 10. 获取文件 GET FILE / 提取 EXTRACT — 参数化查询（已重新编号为 11）
 // ============================================================================
 void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
 {
@@ -1299,9 +1373,9 @@ void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
     int64_t shareFileID = req.m_shareFileID;
     int64_t userId = req.m_userId;
 
-    // Convert m_shareFileID (int64_t carrying hex code) back to hex string
+    // 将 m_shareFileID（承载十六进制分享码的 int64_t）还原为十六进制字符串
     char shareCode[9];
-    sprintf(shareCode, "%08llx", (unsigned long long)shareFileID);
+    snprintf(shareCode, sizeof(shareCode), "%08llx", (unsigned long long)shareFileID);
     std::string sc(shareCode);
 
     m_dbWorker.enqueue([this, sock, sc, userId, shareFileID]() {
@@ -1310,7 +1384,7 @@ void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
         rs.m_szResult = 0;
         rs.m_fileID = 0;
 
-        // Lookup share code (with expiry enforcement)
+        // 查找分享码（并执行过期检查）
         std::list<std::string> lst;
         m_sql->query(
             "SELECT sl.f_id, sl.u_id FROM share_links sl "
@@ -1321,21 +1395,21 @@ void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
             int64_t sharedFileId = atoll(lst.front().c_str()); lst.pop_front();
             int64_t sharerUserId = atoll(lst.front().c_str());
 
-            // --- Guard 1: Prevent self-extract ---
+            // --- 防护 1：禁止提取自己分享的文件 ---
             if (sharerUserId == userId) {
-                // Return error — cannot extract own shared file
+                // 返回错误——不能提取自己分享的文件
                 rs.m_szResult = 0;
                 auto packet = ProtocolFactory::serializeGetFileRS(rs);
                 m_server->sendData(sock, (const char*)packet.data(), (int)packet.size());
                 return;
             }
 
-            // --- Guard 2: Prevent duplicate extract ---
+            // --- 防护 2：防止重复提取 ---
             std::list<std::string> dupLst;
             m_sql->query("SELECT 1 FROM user_file WHERE u_id=? AND f_id=?",
                 {userId, sharedFileId}, 1, dupLst);
             if (!dupLst.empty()) {
-                // Already extracted — return success with existing file info
+                // 已提取过——返回成功及已有文件信息
                 rs.m_fileID = sharedFileId;
                 rs.m_szResult = 1;
                 std::list<std::string> flst;
@@ -1351,7 +1425,7 @@ void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
                 return;
             }
 
-            // Get file info
+            // 获取文件信息
             std::list<std::string> flst;
             m_sql->query("SELECT f_name,f_size,f_sha256 FROM files WHERE f_id=?",
                 {sharedFileId}, 3, flst);
@@ -1361,13 +1435,13 @@ void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
                 rs.m_fileInfo.m_filesize = atoll(flst.front().c_str()); flst.pop_front();
                 strcpy(rs.m_szFileSHA256, flst.front().c_str());
 
-                // --- Reference semantics (not copy): reuse the SAME file row ---
-                // Create user-file mapping pointing to the shared file
+                // --- 引用语义（非复制）：复用同一条文件记录 ---
+                // 创建指向被分享文件的用户-文件映射
                 m_sql->execute(
                     "INSERT INTO user_file(u_id,f_id) VALUES(?,?)",
                     {userId, sharedFileId});
 
-                // Increment reference count on the file
+                // 文件的引用计数加一
                 m_sql->execute(
                     "UPDATE files SET fcount = fcount + 1 WHERE f_id = ?",
                     {sharedFileId});
@@ -1383,11 +1457,11 @@ void tcpkernel::getfilerq(SOCKET sock, const char *szbuf, int nlen)
 }
 
 // ============================================================================
-// Bloom Filter Warmup — parameterized query
+// Bloom Filter 预热 — 参数化查询
 // ============================================================================
 void tcpkernel::warmupBloomFilter()
 {
-    // Run synchronously before DbWorker starts to avoid connection conflict
+    // 在 DbWorker 启动前同步执行，避免连接冲突
     std::list<std::string> sha256s;
     m_sql->query("SELECT f_sha256 FROM files", {}, 1, sha256s);
 
@@ -1400,7 +1474,7 @@ void tcpkernel::warmupBloomFilter()
 }
 
 // ============================================================================
-// Cluster: Handle incoming replication block from peer
+// 集群：处理来自对等节点的复制数据块
 // ============================================================================
 void tcpkernel::replicateblockrq(SOCKET sock, const char* szbuf, int nlen)
 {
@@ -1427,16 +1501,16 @@ void tcpkernel::replicateblockrq(SOCKET sock, const char* szbuf, int nlen)
 }
 
 // ============================================================================
-// AI: Preview handler (Phase 3 Sprint 3.2)
+// AI：智能预览处理函数（阶段三 Sprint 3.2）
 // ============================================================================
 // ============================================================================
-// Phase 2: HTTP Streaming Token Handler
+// 阶段二：HTTP 流媒体令牌处理函数
 // ============================================================================
 void tcpkernel::streamtokenrq(SOCKET sock, const char* szbuf, int nlen) {
     auto req = ProtocolFactory::deserializeStreamTokenRQ(szbuf + 1, nlen - 1);
 
-    // Determine HTTP port: if file lives on a peer, use that peer's HTTP port
-    // so the streaming URL points directly to the node that holds the data
+    // 确定 HTTP 端口：若文件位于对等节点，则使用该节点的 HTTP 端口，
+    // 使流媒体 URL 直接指向持有数据的节点
     int httpPort = m_httpPort;
     if (m_nodeMgr && req.m_fileID > 0 && !m_nodeMgr->isLocal(req.m_fileID)) {
         int peerPort = m_nodeMgr->getHttpPortForFile(req.m_fileID);
@@ -1447,14 +1521,14 @@ void tcpkernel::streamtokenrq(SOCKET sock, const char* szbuf, int nlen) {
         }
     }
 
-    // Query file info on DB worker thread to get file name
+    // 在数据库 worker 线程上查询文件信息以获取文件名
     m_dbWorker.enqueue([this, sock, req, httpPort]() {
-        STRU_STREAMTOKENRS rs = {};  // value-initialize all fields to 0
+        STRU_STREAMTOKENRS rs = {};  // 值初始化所有字段为 0
         rs.m_fileID = req.m_fileID;
         rs.m_nHttpPort = httpPort;
-        rs.m_szResult = 1;  // default: error
+        rs.m_szResult = 1;  // 默认值：错误
 
-        // Look up file name from MySQL — verify ownership via user_file JOIN
+        // 从 MySQL 查询文件名——通过 user_file JOIN 验证所有权
         std::list<std::string> lst;
         m_sql->query(
             "SELECT f.f_name, f.f_size FROM files f "
@@ -1470,14 +1544,14 @@ void tcpkernel::streamtokenrq(SOCKET sock, const char* szbuf, int nlen) {
             rs.m_fileSize = 0;
             try { rs.m_fileSize = std::stoll(*it); } catch (...) {}
 
-            // Generate streaming token with embedded timestamp
+            // 生成带时间戳的流媒体令牌
             int64_t ts = 0;
             std::string token = m_httpServer->generateToken(req.m_userId, req.m_fileID, ts);
             strncpy(rs.m_szToken, token.c_str(), sizeof(rs.m_szToken) - 1);
             rs.m_szToken[sizeof(rs.m_szToken) - 1] = '\0';
             rs.m_nTimestamp = ts;
 
-            rs.m_szResult = 0;  // success
+            rs.m_szResult = 0;  // 成功
 
             printf("[StreamToken] Generated token for user=%lld file=%lld name=%s\n",
                    (long long)req.m_userId, (long long)req.m_fileID, rs.m_szFileName);
@@ -1485,7 +1559,7 @@ void tcpkernel::streamtokenrq(SOCKET sock, const char* szbuf, int nlen) {
             printf("[StreamToken] File not found: fileId=%lld\n", (long long)req.m_fileID);
         }
 
-        // Serialize and send via IOCP main thread
+        // 序列化并通过 IOCP 主线程发送
         auto packet = ProtocolFactory::serializeStreamTokenRS(rs);
         auto* pkt = new std::vector<uint8_t>(std::move(packet));
         m_server->sendData(sock, (const char*)pkt->data(), (int)pkt->size());
@@ -1509,7 +1583,7 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
         memset(rs.m_szRawContent, 0, sizeof(rs.m_szRawContent));
         memset(rs.m_szAIError, 0, sizeof(rs.m_szAIError));
 
-        // Get file name from DB
+        // 从数据库获取文件名
         std::list<std::string> lst;
         m_sql->query(
             "SELECT f_name FROM files f JOIN user_file uf ON f.f_id=uf.f_id WHERE f.f_id=? AND uf.u_id=?",
@@ -1521,7 +1595,7 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
         } else {
             std::string fileName = lst.front();
 
-            // --- L1: Check AI preview cache ---
+            // --- L1：检查 AI 预览缓存 ---
             bool cacheHit = false;
             {
                 std::list<std::string> cacheRows;
@@ -1543,19 +1617,19 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
                 }
             }
 
-            // --- Read file content (needed for rawContent display, and for AI if cache miss) ---
+            // --- 读取文件内容（用于 rawContent 展示；缓存未命中时供 AI 使用） ---
             std::string content;
             if (m_storage) {
                 content = m_storage->readBlock(req.m_fileID, 0);
             }
-            // Legacy fallback: try reading from disk path
+            // 遗留回退：尝试从磁盘路径读取
             if (content.empty()) {
                 std::string fpath = std::string(m_szSystemPath) + std::to_string(req.m_userId) + "\\" + fileName;
-                // F13-3 fix: check file size before reading to avoid OOM on large files
+                // F13-3 修复：读取前先检查文件大小，避免大文件导致内存溢出
                 std::ifstream ff(fpath, std::ios::binary | std::ios::ate);
                 if (ff) {
                     std::streamsize fsize = ff.tellg();
-                    const std::streamsize MAX_LEGACY_READ = 10 * 1024 * 1024; // 10 MB limit
+                    const std::streamsize MAX_LEGACY_READ = 10 * 1024 * 1024; // 10 MB 上限
                     if (fsize > MAX_LEGACY_READ) {
                         fprintf(stderr, "[aipreview] WARNING: legacy file too large (%lld bytes), "
                                 "truncating to first %lld bytes\n",
@@ -1569,14 +1643,14 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
             }
 
             if (cacheHit) {
-                // Cache hit — skip AI, just fill filename + raw content
+                // 缓存命中——跳过 AI，仅填充文件名与原始内容
                 strncpy(rs.m_szFileName, fileName.c_str(), sizeof(rs.m_szFileName) - 1);
                 int rawLen = std::min(static_cast<int>(content.size()), MAXFILECONTENT * 2);
                 rs.m_nRawContentLen = rawLen;
                 if (rawLen > 0) memcpy(rs.m_szRawContent, content.c_str(), rawLen);
-                rs.m_szAIError[0] = '\0';  // no error, cache served
+                rs.m_szAIError[0] = '\0';  // 无错误，由缓存提供
             } else if (!content.empty()) {
-                // Cache miss → call AI → store cache
+                // 缓存未命中 → 调用 AI → 写入缓存
                 auto result = m_aiPreview->preview(req.m_fileID, content, fileName);
                 rs.m_szResult = result.success ? 0 : 2;
                 strncpy(rs.m_szSummary, result.summary.c_str(), sizeof(rs.m_szSummary) - 1);
@@ -1589,7 +1663,7 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
                 if (rawLen > 0) memcpy(rs.m_szRawContent, content.c_str(), rawLen);
                 strncpy(rs.m_szAIError, result.errorMsg.c_str(), sizeof(rs.m_szAIError) - 1);
 
-                // Store to cache if AI succeeded (skip on fallback/error)
+                // AI 成功时写入缓存（回退或出错时跳过）
                 if (result.success && result.errorMsg.empty()) {
                     m_sql->execute(
                         "INSERT INTO ai_previews(f_id, summary, keywords, key_sentences, file_type) "
@@ -1611,7 +1685,7 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
 }
 
 // ============================================================================
-// AI: Search handler (Phase 3 Sprint 3.3)
+// AI：语义搜索处理函数（阶段三 Sprint 3.3）
 // ============================================================================
 void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
     auto req = ProtocolFactory::deserializeAISearchRQ(szbuf + 1, nlen - 1);
@@ -1619,11 +1693,11 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
     m_dbWorker.enqueue([this, sock, req]() {
         STRU_AISEARCHRS rs;
         rs.m_nResultNum = 0;
-        rs.m_szResult = 1; // default: fallback
+        rs.m_szResult = 1; // 默认值：回退
 
         std::string query(req.m_szQuery);
 
-        // F9-1 fix: escape LIKE special characters (%, _, \) before embedding in pattern
+        // F9-1 修复：嵌入模式前转义 LIKE 特殊字符（%、_、\）
         auto escapeLike = [](const std::string& s) -> std::string {
             std::string out;
             for (char c : s) {
@@ -1633,8 +1707,8 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
             return out;
         };
 
-        // F9-2 fix: merge AI + LIKE results (not simple OR).
-        // Always run LIKE and deduplicate by fileId against AI results.
+        // F9-2 修复：合并 AI 与 LIKE 结果（而非简单 OR）。
+        // 始终执行 LIKE 查询，并按 fileId 与 AI 结果去重。
         bool aiHasResults = false;
         if (APIBridge::instance()->isEnabled()) {
             auto aiRs = m_aiSearch->search(query, req.m_userId);
@@ -1644,9 +1718,9 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
             }
         }
 
-        // LIKE fallback — always run, merge with AI results (F9-2 fix)
+        // LIKE 回退——始终执行，与 AI 结果合并（F9-2 修复）
         {
-            // Track seen file IDs from AI results for deduplication
+            // 记录 AI 结果中已出现的文件 ID 用于去重
             std::set<int64_t> seenFileIds;
             for (int i = 0; i < rs.m_nResultNum; i++) {
                 seenFileIds.insert(rs.m_aryResults[i].m_fileInfo.m_fileID);
@@ -1666,7 +1740,7 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
                 std::string fname = lst.front(); lst.pop_front();
                 int64_t fsize = atoll(lst.front().c_str()); lst.pop_front();
 
-                // F9-2: skip duplicates already in AI results
+                // F9-2：跳过 AI 结果中已有的重复项
                 if (seenFileIds.count(fid)) continue;
 
                 rs.m_aryResults[idx].m_fileInfo.m_fileID = fid;
@@ -1685,7 +1759,7 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
 }
 
 // ============================================================================
-// AI: Tag handler (Phase 3 Sprint 3.4)
+// AI：自动标签处理函数（阶段三 Sprint 3.4）
 // ============================================================================
 void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
     auto req = ProtocolFactory::deserializeAITagRQ(szbuf + 1, nlen - 1);
@@ -1699,7 +1773,7 @@ void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
         memset(rs.m_szTags, 0, sizeof(rs.m_szTags));
         memset(rs.m_szNewTags, 0, sizeof(rs.m_szNewTags));
 
-        // Get file info
+        // 获取文件信息
         std::list<std::string> lst;
         m_sql->query("SELECT f_name FROM files WHERE f_id=?",
             {static_cast<int64_t>(req.m_fileID)}, 1, lst);
@@ -1707,7 +1781,7 @@ void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
         if (!lst.empty()) {
             std::string fileName = lst.front();
 
-            // F15-2 fix: check cache first — return existing tags without AI call
+            // F15-2 修复：先检查缓存——不调用 AI 直接返回已有标签
             std::list<std::string> cachedTags;
             m_sql->query("SELECT tag FROM file_tags WHERE f_id=? LIMIT 15",
                 {static_cast<int64_t>(req.m_fileID)}, 1, cachedTags);
@@ -1728,7 +1802,7 @@ void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
                 content = m_storage->readBlock(req.m_fileID, 0);
             }
             if (content.empty()) {
-                // Fallback: tag by extension
+                // 回退：按扩展名打标签
                 auto pos = fileName.rfind('.');
                 std::string ext = (pos != std::string::npos) ? fileName.substr(pos + 1) : "unknown";
                 if (rs.m_nTagNum < 15) {
@@ -1738,18 +1812,18 @@ void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
             } else {
                 auto tagResult = m_aiTag->tagFile(req.m_fileID, content, fileName);
                 if (tagResult.success) {
-                    // --- Persist tags to file_tags and tag_pool ---
-                    // Clear old tags for this file
+                    // --- 将标签持久化到 file_tags 与 tag_pool ---
+                    // 清除该文件的旧标签
                     m_sql->execute("DELETE FROM file_tags WHERE f_id=?",
                                    {static_cast<int64_t>(req.m_fileID)});
                     for (const auto& tag : tagResult.tags) {
-                        // Cap tag length
+                        // 限制标签长度
                         std::string safeTag = tag.size() > 99 ? tag.substr(0, 99) : tag;
-                        // Insert file_tag
+                        // 插入 file_tag
                         m_sql->execute(
                             "INSERT IGNORE INTO file_tags(f_id, tag) VALUES(?,?)",
                             {static_cast<int64_t>(req.m_fileID), safeTag});
-                        // Update tag_pool: increment use_count, promote to active at threshold
+                        // 更新 tag_pool：use_count 加一，达到阈值后升级为 active
                         m_sql->execute(
                             "INSERT INTO tag_pool(tag, status, use_count, last_used_at) "
                             "VALUES(?,'pending',1,NOW()) ON DUPLICATE KEY UPDATE "

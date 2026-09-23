@@ -29,6 +29,7 @@ __pycache__/
 testdata/
 CLAUDE.md
 README_SETUP.md
+tests/README.md
 0323server/_ai_test/
 scripts/build_stress_test.bat
 scripts/stress_test.cpp
@@ -49,6 +50,7 @@ server.log
 
 # ===== 非项目文件 =====
 vibecoding经验(5).pdf
+tests/clang-tidy-report.txt
 
 # ===== 运行时数据（磁盘存储由 server.conf 的 storage_path 指定）=====
 *.db

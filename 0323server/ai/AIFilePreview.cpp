@@ -7,7 +7,7 @@
 PreviewResult AIFilePreview::preview(int64_t fileId, const std::string& content, const std::string& fileName) {
     PreviewResult r;
     if (!isAIEnabled()) {
-        // Fallback: return first 200 chars as summary
+        // 降级: 取前 200 字符作为摘要
         r.success = true;
         r.summary = content.substr(0, std::min<size_t>(200, content.size())) + (content.size() > 200 ? "..." : "");
         r.fileType = "unknown";
@@ -33,7 +33,7 @@ PreviewResult AIFilePreview::preview(int64_t fileId, const std::string& content,
         return parsePreviewResponse(aiResp.content);
     }
 
-    // API failed — fallback
+    // API 调用失败 — 降级处理
     r.success = true;
     r.summary = content.substr(0, std::min<size_t>(200, content.size()));
     r.keywords = fileName;

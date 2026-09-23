@@ -1,31 +1,30 @@
 /**
  * @file BinaryStream.cpp
- * @brief Implementation of the BinaryStream serialization engine.
+ * @brief BinaryStream 二进制读写器的实现。
  *
- * All multi-byte integers are converted to/from network byte order (big-endian)
- * using hand-rolled bit operations (anonymous namespace below).
- * No Winsock2 htonl/ntohl dependency — the implementation does NOT call
- * the system byte-swap functions.
+ * 所有多字节整数均通过手写位运算（见下方匿名命名空间）在网络字节序（大端）
+ * 与主机字节序之间转换。
+ * 不依赖 Winsock2 的 htonl/ntohl —— 本实现不调用任何系统的字节交换函数。
  */
 
 #include "BinaryStream.h"
 #include <cstring>
 
-// Inline byte-order conversion (no platform dependencies)
-// All multi-byte integers are network byte order (big-endian)
+// 内联字节序转换（无平台依赖）
+// 所有多字节整数均为网络字节序（大端）
 namespace {
     inline bool isLittleEndian() {
         const uint16_t v = 1;
         return (*reinterpret_cast<const uint8_t*>(&v) == 1);
     }
     inline uint32_t hostToNet32(uint32_t v) { return isLittleEndian() ? ((v >> 24) | ((v >> 8) & 0xFF00) | ((v << 8) & 0xFF0000) | (v << 24)) : v; }
-    inline uint32_t netToHost32(uint32_t v) { return hostToNet32(v); }  // symmetric
+    inline uint32_t netToHost32(uint32_t v) { return hostToNet32(v); }  // 对称转换
     inline uint16_t hostToNet16(uint16_t v) { return isLittleEndian() ? (uint16_t)((v >> 8) | (v << 8)) : v; }
     inline uint16_t netToHost16(uint16_t v) { return hostToNet16(v); }
 }
 
 // ============================================================================
-// Construction
+// 构造
 // ============================================================================
 
 BinaryStream::BinaryStream()
@@ -45,7 +44,7 @@ BinaryStream BinaryStream::fromData(const char* data, int len)
 }
 
 // ============================================================================
-// Write Operators
+// 写操作
 // ============================================================================
 
 BinaryStream& BinaryStream::operator<<(int32_t val)
@@ -58,8 +57,8 @@ BinaryStream& BinaryStream::operator<<(int32_t val)
 
 BinaryStream& BinaryStream::operator<<(int64_t val)
 {
-    // Manual big-endian: split 64-bit into hi/lo 32-bit halves,
-    // convert each to network byte order, append hi then lo.
+    // 手写大端：将 64 位拆分为高、低两个 32 位半段，
+    // 各自转换为网络字节序后，先追加高 32 位，再追加低 32 位。
     uint64_t uval = static_cast<uint64_t>(val);
     uint32_t hi = static_cast<uint32_t>(uval >> 32);
     uint32_t lo = static_cast<uint32_t>(uval & 0xFFFFFFFF);
@@ -75,13 +74,13 @@ BinaryStream& BinaryStream::operator<<(int64_t val)
 
 BinaryStream& BinaryStream::operator<<(const std::string& str)
 {
-    // 2-byte length prefix in network byte order
+    // 2 字节长度前缀，网络字节序
     uint16_t len = static_cast<uint16_t>(str.size());
     len = hostToNet16(len);
     const uint8_t* lenBytes = reinterpret_cast<const uint8_t*>(&len);
     m_buffer.insert(m_buffer.end(), lenBytes, lenBytes + sizeof(len));
 
-    // UTF-8 content
+    // UTF-8 内容
     if (!str.empty()) {
         m_buffer.insert(m_buffer.end(),
                         reinterpret_cast<const uint8_t*>(str.data()),
@@ -94,18 +93,18 @@ BinaryStream& BinaryStream::writeFixedString(const char* str, int fixedSize)
 {
     if (fixedSize <= 0) return *this;
 
-    // Write exactly fixedSize bytes, zero-padded if str is shorter
+    // 恰好写入 fixedSize 字节；若 str 较短，剩余部分补 0
     size_t strLen = (str != nullptr) ? std::strlen(str) : 0;
     size_t copyLen = (strLen < static_cast<size_t>(fixedSize)) ? strLen : static_cast<size_t>(fixedSize);
 
-    // Copy string content
+    // 拷贝字符串内容
     if (copyLen > 0) {
         m_buffer.insert(m_buffer.end(),
                         reinterpret_cast<const uint8_t*>(str),
                         reinterpret_cast<const uint8_t*>(str) + copyLen);
     }
 
-    // Zero-pad remaining bytes
+    // 剩余字节补 0
     size_t padLen = static_cast<size_t>(fixedSize) - copyLen;
     if (padLen > 0) {
         m_buffer.insert(m_buffer.end(), padLen, 0);
@@ -124,7 +123,7 @@ void BinaryStream::writeRaw(const char* data, int len)
 }
 
 // ============================================================================
-// Read Operators
+// 读操作
 // ============================================================================
 
 void BinaryStream::ensureReadable(int need) const
@@ -155,7 +154,7 @@ BinaryStream& BinaryStream::operator>>(int64_t& val)
 {
     ensureReadable(8);
 
-    // Read hi and lo 32-bit halves in network byte order
+    // 按网络字节序读取高、低两个 32 位半段
     uint32_t hi, lo;
     std::memcpy(&hi, m_buffer.data() + m_readPos, sizeof(hi));
     std::memcpy(&lo, m_buffer.data() + m_readPos + 4, sizeof(lo));
@@ -173,7 +172,7 @@ BinaryStream& BinaryStream::operator>>(std::string& str)
 {
     ensureReadable(2);
 
-    // Read 2-byte length prefix
+    // 读取 2 字节长度前缀
     uint16_t netLen;
     std::memcpy(&netLen, m_buffer.data() + m_readPos, sizeof(netLen));
     m_readPos += 2;
@@ -181,7 +180,7 @@ BinaryStream& BinaryStream::operator>>(std::string& str)
     uint16_t strLen = netToHost16(netLen);
     ensureReadable(static_cast<int>(strLen));
 
-    // Read string content
+    // 读取字符串内容
     if (strLen > 0) {
         str.assign(reinterpret_cast<const char*>(m_buffer.data() + m_readPos), strLen);
         m_readPos += strLen;
@@ -201,7 +200,7 @@ BinaryStream& BinaryStream::readFixedString(char* str, int fixedSize)
     std::memcpy(str, m_buffer.data() + m_readPos, fixedSize);
     m_readPos += fixedSize;
 
-    // Ensure null termination (in case source data fills the entire buffer)
+    // 确保以 '\0' 结尾（防止源数据占满整个缓冲区时缺少终止符）
     str[fixedSize - 1] = '\0';
 
     return *this;
@@ -217,7 +216,7 @@ void BinaryStream::readRaw(char* data, int len)
 }
 
 // ============================================================================
-// State Management
+// 状态管理
 // ============================================================================
 
 void BinaryStream::reset()

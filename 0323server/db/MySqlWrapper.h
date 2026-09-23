@@ -3,13 +3,13 @@
 
 /**
  * @file MySqlWrapper.h
- * @brief MySQL wrapper with parameterized query support.
+ * @brief 支持参数化查询的 MySQL 封装。
  *
- * Replaces CMySql's sprintf-based SQL (vulnerable to injection).
- * Uses MySQL C API prepared statements (mysql_stmt_*) for all queries.
- * execute() for INSERT/UPDATE/DELETE, query() for SELECT with result binding.
+ * 取代 CMySql 基于 sprintf 拼装的 SQL（存在注入漏洞）。
+ * 所有查询均使用 MySQL C API 预处理语句（mysql_stmt_*）。
+ * execute() 用于 INSERT/UPDATE/DELETE，query() 用于 SELECT 并绑定结果。
  *
- * Thread safety: NOT thread-safe. Use via DbWorker single-threaded task queue.
+ * 线程安全：非线程安全。请通过 DbWorker 单线程任务队列使用。
  */
 
 #include <mysql.h>
@@ -18,7 +18,7 @@
 #include <list>
 #include <cstdint>
 
-// C++11-compatible tagged union (replaces std::variant<std::string, int64_t, double, nullptr_t>)
+// 兼容 C++11 的带标签联合体（替代 std::variant<std::string, int64_t, double, nullptr_t>）
 class SqlValue {
 public:
     enum Type { Null, String, Int64, Double };
@@ -52,17 +52,17 @@ public:
     bool connect(const char* host, const char* user, const char* pass, const char* db);
     void disconnect();
 
-    // Parameterized query — no SQL injection
+    // 参数化查询——无 SQL 注入风险
     bool execute(const char* sql, const std::vector<SqlValue>& params);
 
-    // Parameterized SELECT → results (each row: nColumn strings pushed to results)
+    // 参数化 SELECT → 结果集（每行：nColumn 个字符串追加到 results）
     bool query(const char* sql, const std::vector<SqlValue>& params,
                int nColumn, std::list<std::string>& results);
 
-    // Simple raw query (for migration/setup only — NOT for user input)
+    // 简单原生查询（仅用于迁移/初始化——不可用于用户输入）
     bool executeRaw(const char* sql);
 
-    // F8-2 fix: Transaction support for multi-statement atomicity
+    // F8-2 修复：事务支持，保证多语句原子性
     bool begin();
     bool commit();
     bool rollback();

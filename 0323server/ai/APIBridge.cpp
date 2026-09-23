@@ -16,10 +16,10 @@ APIBridge::APIBridge(QObject* parent) : QObject(parent), m_enabled(false), m_man
 }
 
 // ============================================================================
-// detectFromEnv — priority: SILICONFLOW_API_KEY > OPENAI_API_KEY > OLLAMA_HOST > disabled
+// detectFromEnv — 优先级: SILICONFLOW_API_KEY > OPENAI_API_KEY > OLLAMA_HOST > 禁用
 // ============================================================================
 void APIBridge::detectFromEnv() {
-    // 1) Try SiliconFlow
+    // 1) 尝试 SiliconFlow
     const char* sfKey = std::getenv("SILICONFLOW_API_KEY");
     if (sfKey && strlen(sfKey) > 0) {
         m_config = AiConfig::siliconflow(sfKey);
@@ -30,7 +30,7 @@ void APIBridge::detectFromEnv() {
         return;
     }
 
-    // 2) Fallback: OpenAI (legacy)
+    // 2) 回退: OpenAI（旧版兼容）
     const char* oaKey = std::getenv("OPENAI_API_KEY");
     if (oaKey && strlen(oaKey) > 0) {
         m_config = AiConfig::openai(oaKey);
@@ -41,7 +41,7 @@ void APIBridge::detectFromEnv() {
         return;
     }
 
-    // 3) Ollama (local service, no API key needed)
+    // 3) Ollama（本地服务，无需 API Key）
     const char* ollamaHost = std::getenv("OLLAMA_HOST");
     if (ollamaHost && strlen(ollamaHost) > 0) {
         m_config = AiConfig::ollama(ollamaHost);
@@ -52,14 +52,14 @@ void APIBridge::detectFromEnv() {
         return;
     }
 
-    // 4) No key / no host → disabled
+    // 4) 无 Key / 无 host → 禁用
     m_enabled = false;
     m_manager = nullptr;
     printf("APIBridge: AI disabled (set SILICONFLOW_API_KEY, OPENAI_API_KEY, or OLLAMA_HOST to enable)\n");
 }
 
 // ============================================================================
-// initFromConfig — override env detection with explicit config from server.conf
+// initFromConfig — 用 server.conf 中的显式配置覆盖环境变量检测
 // ============================================================================
 void APIBridge::initFromConfig(const AiConfig& config) {
     if (!config.isValid()) {
@@ -67,7 +67,7 @@ void APIBridge::initFromConfig(const AiConfig& config) {
         return;
     }
 
-    // Clean up old manager if re-initializing
+    // 若重复初始化，先清理旧的 manager
     if (m_manager) {
         delete m_manager;
         m_manager = nullptr;
@@ -76,7 +76,7 @@ void APIBridge::initFromConfig(const AiConfig& config) {
     m_config = config;
     m_enabled = true;
 
-    // Create new manager (ownership stays with APIBridge as QObject parent is set in constructor)
+    // 创建新的 manager（构造函数已设置 QObject 父对象，所有权归属 APIBridge）
     m_manager = new QNetworkAccessManager(this);
 
     printf("APIBridge: AI enabled from server.conf — provider=%s, base_url=%s, chat=%s, embedding=%s\n",
@@ -85,12 +85,12 @@ void APIBridge::initFromConfig(const AiConfig& config) {
 }
 
 // ============================================================================
-// HTTP helpers
+// HTTP 辅助函数
 // ============================================================================
 QNetworkRequest APIBridge::buildRequest(const std::string& endpoint) {
     QNetworkRequest req(QUrl(QString::fromStdString(m_config.baseUrl + endpoint)));
     req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    // Skip Authorization header when no key is configured (e.g. local Ollama)
+    // 未配置 Key 时跳过 Authorization 头（如本地 Ollama）
     if (!m_config.apiKey.empty()) {
         req.setRawHeader("Authorization", ("Bearer " + m_config.apiKey).c_str());
     }
@@ -116,7 +116,7 @@ QJsonObject APIBridge::chatBody(const std::string& systemPrompt, const std::stri
 
     body["messages"] = messages;
 
-    // Request JSON format output
+    // 请求 JSON 格式输出
     QJsonObject responseFmt;
     responseFmt["type"] = "json_object";
     body["response_format"] = responseFmt;
@@ -154,10 +154,10 @@ APIBridge::AIResponse APIBridge::parseChatResponse(const QByteArray& data) {
 }
 
 // ============================================================================
-// chat — synchronous
+// chat — 同步
 // ============================================================================
 APIBridge::AIResponse APIBridge::chat(const std::string& systemPrompt, const std::string& userContent) {
-    if (isOllama()) return ollamaChat(systemPrompt, userContent);   // Ollama protocol branch
+    if (isOllama()) return ollamaChat(systemPrompt, userContent);   // Ollama 协议分支
     if (!m_enabled) { AIResponse r; r.success = false; r.errorMsg = "AI disabled: no API key configured"; return r; }
 
     QNetworkReply* reply = m_manager->post(
@@ -188,7 +188,7 @@ APIBridge::AIResponse APIBridge::chat(const std::string& systemPrompt, const std
 
 void APIBridge::chatAsync(const std::string& systemPrompt, const std::string& userContent,
                            std::function<void(AIResponse)> callback) {
-    if (isOllama()) { ollamaChatAsync(systemPrompt, userContent, callback); return; }   // Ollama branch
+    if (isOllama()) { ollamaChatAsync(systemPrompt, userContent, callback); return; }   // Ollama 分支
     if (!m_enabled) {
         if (callback) { AIResponse r; r.success = false; r.errorMsg = "AI disabled"; callback(r); }
         return;
@@ -219,7 +219,7 @@ void APIBridge::chatAsync(const std::string& systemPrompt, const std::string& us
 }
 
 // ============================================================================
-// embedding — synchronous
+// embedding — 同步
 // ============================================================================
 QJsonObject APIBridge::embeddingBody(const std::string& text) {
     QJsonObject body;
@@ -251,7 +251,7 @@ APIBridge::EmbeddingResult APIBridge::parseEmbeddingResponse(const QByteArray& d
 }
 
 APIBridge::EmbeddingResult APIBridge::embedding(const std::string& text) {
-    if (isOllama()) return ollamaEmbedding(text);   // Ollama protocol branch
+    if (isOllama()) return ollamaEmbedding(text);   // Ollama 协议分支
     if (!m_enabled) return {};
     QNetworkReply* reply = m_manager->post(
         buildRequest("/embeddings"),
@@ -274,7 +274,7 @@ APIBridge::EmbeddingResult APIBridge::embedding(const std::string& text) {
 
 void APIBridge::embeddingAsync(const std::string& text,
                                 std::function<void(EmbeddingResult)> callback) {
-    if (isOllama()) { ollamaEmbeddingAsync(text, callback); return; }   // Ollama branch
+    if (isOllama()) { ollamaEmbeddingAsync(text, callback); return; }   // Ollama 分支
     if (!m_enabled) { if (callback) callback({}); return; }
     QNetworkReply* reply = m_manager->post(
         buildRequest("/embeddings"),
@@ -297,17 +297,17 @@ void APIBridge::embeddingAsync(const std::string& text,
 }
 
 // ============================================================================
-// vision — synchronous (uses chat endpoint with image content)
+// vision — 同步（使用 chat 端点携带图像内容）
 // ============================================================================
 APIBridge::VisionResult APIBridge::vision(const std::string& prompt, const std::string& imageBase64) {
     if (isOllama()) {
-        // Ollama /api/chat has a different image message format; not supported in this branch.
+        // Ollama /api/chat 的图像消息格式不同，此分支不支持。
         VisionResult r; r.success = false; r.errorMsg = "Ollama vision not supported";
         return r;
     }
     if (!m_enabled) return {};
     QJsonObject body;
-    body["model"] = QString::fromStdString(m_config.chatModel);  // use chat model for vision too
+    body["model"] = QString::fromStdString(m_config.chatModel);  // vision 同样使用 chat 模型
     body["max_tokens"] = 500;
 
     QJsonArray messages;
@@ -364,13 +364,13 @@ void APIBridge::visionAsync(const std::string& prompt, const std::string& imageB
 }
 
 // ============================================================================
-// Ollama protocol branch — local service, native /api/chat + /api/embed.
-// Request/response formats differ from OpenAI:
+// Ollama 协议分支 — 本地服务，使用原生 /api/chat + /api/embed。
+// 请求/响应格式与 OpenAI 不同:
 //   chat:      POST {baseUrl}/api/chat  body {"model", "messages", "stream": false}
-//              response content at data["message"]["content"]
+//              响应内容位于 data["message"]["content"]
 //   embedding: POST {baseUrl}/api/embed body {"model", "input": text}
-//              response vector at data["embeddings"][0]  (nested array)
-//   auth:      none (Authorization header skipped when apiKey is empty)
+//              响应向量位于 data["embeddings"][0]  （嵌套数组）
+//   auth:      无（apiKey 为空时跳过 Authorization 头）
 // ============================================================================
 bool APIBridge::isOllama() const {
     return m_config.provider == "ollama";
@@ -392,7 +392,7 @@ QJsonObject APIBridge::ollamaChatBody(const std::string& systemPrompt, const std
     messages.append(userMsg);
 
     body["messages"] = messages;
-    body["stream"] = false;   // non-streaming JSON response
+    body["stream"] = false;   // 非流式 JSON 响应
     return body;
 }
 
@@ -411,7 +411,7 @@ APIBridge::AIResponse APIBridge::parseOllamaChatResponse(const QByteArray& data)
         return r;
     }
 
-    // Ollama: content lives under "message"."content" (no "choices" array)
+    // Ollama: 内容位于 "message"."content"（没有 "choices" 数组）
     QJsonObject msg = root["message"].toObject();
     if (msg.isEmpty()) {
         r.success = false;
@@ -422,7 +422,7 @@ APIBridge::AIResponse APIBridge::parseOllamaChatResponse(const QByteArray& data)
     r.success = true;
     r.content = msg["content"].toString().toStdString();
     r.model = root["model"].toString().toStdString();
-    r.tokensUsed = root["eval_count"].toInt();   // output tokens (Ollama naming)
+    r.tokensUsed = root["eval_count"].toInt();   // 输出 tokens 数（Ollama 命名）
     return r;
 }
 
@@ -507,7 +507,7 @@ APIBridge::EmbeddingResult APIBridge::parseOllamaEmbeddingResponse(const QByteAr
         return r;
     }
 
-    // Ollama /api/embed: "embeddings": [[...]] — one vector per input (nested array)
+    // Ollama /api/embed: "embeddings": [[...]] — 每个输入一个向量（嵌套数组）
     QJsonArray embeddings = root["embeddings"].toArray();
     if (embeddings.isEmpty()) {
         r.success = false; r.errorMsg = "No embeddings array"; return r;

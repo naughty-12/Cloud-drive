@@ -9,20 +9,20 @@
 
 ## 项目亮点
 
-- **IOCP 异步 I/O**: Windows IOCP 事件驱动架构，4 工作线程处理数千并发
-- **自研序列化引擎**: BinaryStream + ProtocolFactory，37 个协议类型号（2~38），网络字节序统一
+- **IOCP 异步 I/O**: Windows IOCP 事件驱动架构，1 accept 线程 + 4 worker 线程 + 独立 DB 线程（附压测工具，验证 100 并发）
+- **自研二进制读写器**: BinaryStream + ProtocolFactory，37 个协议类型号（2~38），网络字节序统一
 - **三层秒传漏斗**: L1 SQLite 缓存 → L2 稀疏指纹 → L3 Bloom Filter
 - **SHA-256 安全基线**: 自实现 RFC 6234，替换 MD5；Prepared Statement 防 SQL 注入
 - **AI 可插拔增强**: 多 Provider（SiliconFlow / OpenAI / Ollama / 自定义）智能预览 + Embedding 语义搜索 + 自动标签，API 不可用时静默降级
 - **断点续传**: SQLite 持久化上传状态，服务重启自动恢复
-- **分布式存储原型**: 一致性哈希 + 节点镜像 + 重定向协议，双服务器可演示
+- **分布式存储原型**: 哈希取模分片（FNV-1a，无虚拟节点）+ 节点镜像 + 重定向协议，双服务器可演示
 
 ## 架构
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                      CLIENT (Qt Widgets)                   │
-│  login1 | Widget | PreviewPanel | tcpkernel | TCPClient   │
+│  login1 | Widget | TagCloud | tcpkernel | TCPClient       │
 └─────────────────────── TCP/8899 ─────────────────────────┘
 ┌──────────────────────────────────────────────────────────┐
 │                   SERVER (IOCP + Qt Core)                  │
@@ -100,21 +100,21 @@ set SILICONFLOW_API_KEY=sk-your-siliconflow-key   # 硅基流动（国内直连�
 ```
 0323/
 ├── shared/libprotocol/      # 协议静态库 (Packdef.h + BinaryStream + ProtocolFactory)
+├── shared/log/              # 共享日志模块 (LogManager)
+├── shared/crypto/           # 共享安全模块 (CryptoUtil — SHA-256，两端同一份源码)
 ├── 0323server/              # 服务端
 │   ├── iocp/                # IOCP 异步 I/O 网络层
 │   ├── db/                  # MySQL 封装 + 异步任务队列 + 断点续传状态
 │   ├── ai/                  # AI 桥接层 + 智能预览 + 语义搜索 + 自动标签
 │   ├── storage/             # 追加写存储引擎 + Bloom Filter
-│   ├── cluster/             # 分布式节点管理 (一致性哈希 + 镜像复制)
-│   ├── security/            # SHA-256 实现
+│   ├── cluster/             # 分布式节点管理 (哈希取模分片 + 镜像复制)
 │   ├── kernel/              # 业务内核 (协议分发 + 所有 Handler)
 │   └── third_party/openssl/ # OpenSSL 1.1.1 运行时 DLL
 ├── 0323client/              # 客户端
 │   ├── kernel/              # 客户端内核 (信号发射)
 │   ├── tcpclient/           # TCP 网络层 (WinSock2)
-│   ├── security/            # SHA-256 (与服务端共享代码)
 │   ├── cache/               # SQLite 秒传缓存
-│   └── login1.* / widget.*  # 登录 + 主窗口 UI
+│   └── login1.* / widget.* / TagCloud.*  # 登录 + 主窗口 + AI 标签云
 └── scripts/                 # 部署脚本 + 数据库初始化
 ```
 
@@ -146,7 +146,7 @@ set SILICONFLOW_API_KEY=sk-your-siliconflow-key   # 硅基流动（国内直连�
 | AI 预览 | ✅ 多Provider | ✅ 摘要弹窗 | 降级到原文 |
 | AI 搜索 | ✅ Embedding | ✅ 结果展示 | LIKE fallback |
 | AI 标签 | ✅ 多Provider | ✅ 标签显示 | 降级到扩展名 |
-| 分布式 | ✅ 一致性哈希 | ✅ 重定向提示 | 节点镜像 |
+| 分布式 | ✅ 哈希取模分片 | ✅ 重定向提示 | 节点镜像 |
 | 视频播放 | ✅ HTTP Range 流媒体 | ✅ 唤起播放器 | 206 + 临时 Token |
 
 ## 安全设计

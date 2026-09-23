@@ -4,6 +4,7 @@ CONFIG += c++11 cmdline
 
 INCLUDEPATH += ../shared/libprotocol
 INCLUDEPATH += ../shared/log
+INCLUDEPATH += ../shared/crypto
 
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.
@@ -19,7 +20,7 @@ else: unix:!android: target.path = /opt/$${TARGET}/bin
 
 include(./iocp/iocp.pri)
 include(./kernel/kernel.pri)
-include(./security/security.pri)
+include(../shared/crypto/crypto.pri)
 include(./db/db.pri)
 include(./db/replicationworker.pri)
 include(./storage/storage.pri)
