@@ -15,6 +15,9 @@ Makefile.*
 .qtc_clangd/
 *.user
 *.pro.user*
+# 单测工程会把 ai/local/tag_dict.json 拷到运行目录 (unit_tests.pro 的 QMAKE_POST_LINK),
+# 源文件在 0323server/ai/local/ 入库, 构建目录里的副本不入库
+tests/unit_tests/tag_dict.json
 
 # ===== 本地工具状态 =====
 .claude/
