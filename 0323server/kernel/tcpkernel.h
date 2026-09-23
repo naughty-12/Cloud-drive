@@ -18,6 +18,12 @@
 #include "../ai/AIFilePreview.h"
 #include "../ai/AISearchSvc.h"
 #include "../ai/AITagService.h"
+// 本地检索引擎（AI 三件套的主路径，见 .dsh-dev/specs/2026-09-07-local-engine-first-design.md）
+#include "../ai/local/LocalTextIndex.h"
+#include "../ai/local/LocalSearchEngine.h"
+#include "../ai/local/LocalPreviewEngine.h"
+#include "../ai/local/LocalTagEngine.h"
+#include "../ai/local/TxtTextExtractor.h"
 #include <list>
 #include <mutex>
 #include <unordered_set>
@@ -99,10 +105,22 @@ private:
     std::list<STRU_FILEINFO*> m_lstFileInfo;
     std::mutex m_fileInfoMutex;  // 跨 IOCP worker 线程与 DbWorker 线程保护 m_lstFileInfo
 
-    // 阶段三：AI 服务模块
+    // 阶段三：AI 服务模块（LLM 增强层——本地引擎不可用/需要生成式理解时才使用）
     AIFilePreview* m_aiPreview;
     AISearchSvc*   m_aiSearch;
     AITagService*  m_aiTag;
+
+    // 阶段三：本地检索引擎（AI 三件套的**主路径**——纯本地计算，无 Key 也完整可用）
+    // 线程约束：m_localIndex / m_localTag 只在 DbWorker 线程内读写
+    // （上传完成的增量索引 + 三个 AI handler 都跑在该线程的队列里），故不加锁。
+    LocalTextIndex     m_localIndex;    // 内容级倒排索引（内存，上传完成/预览时增量维护）
+    LocalSearchEngine* m_localSearch;   // TF-IDF 余弦检索（非拥有 m_localIndex）
+    LocalTagEngine     m_localTag;      // 规则 + 词典标签（词典在 boolopen() 加载一次，之后只读）
+
+    // 本地索引维护：按文件名判定是否可提取文本 → 提取 → 增量索引（重复调用幂等）
+    void indexLocalContent(int64_t fileId, const std::string& fileName, const std::string& rawContent);
+    // 词典部署路径策略：exe 同目录 → 工作目录 → 编译期源码路径 → 源码相对回退；全失败只告警并退化为纯扩展名规则
+    void loadLocalTagDict();
 
     // 线程安全辅助函数：按 file_id 查找（调用方不得在解锁后继续持有指针）
     STRU_FILEINFO* findFileInfoLocked(int64_t fileId);

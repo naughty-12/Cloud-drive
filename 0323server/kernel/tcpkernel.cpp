@@ -11,6 +11,53 @@
 #include <sstream>
 #include <random>   // 分享码生成所用的 CSPRNG 随机数源
 #include <set>      // F9-2：对 AI 与 LIKE 搜索结果去重
+#include <map>      // 本地检索结果 fileId → 文件元数据
+#include <vector>
+#include <cstdio>
+
+namespace {
+
+/// 本地内容检索的召回上限（倒排召回 + 余弦排序后的 TopN；最终结果再按协议 MAXSIZE 截断）。
+/// 30 = 远大于单次响应可容纳条数，保证"用户可见文件过滤"后仍有足够候选。
+const size_t kLocalSearchTopN = 30;
+
+/// 本地检索结果对应的文件元数据（SQL 过滤到"该用户可见"后填充）。
+struct SearchFileMeta {
+    int64_t     fileId;
+    std::string name;
+    int64_t     size;
+    std::string sha256;
+};
+
+/// 去重后追加标签（保序：先到的标签在前）。
+void pushUniqueTag(std::vector<std::string>& tags, const std::string& tag)
+{
+    if (tag.empty())
+        return;
+    for (size_t i = 0; i < tags.size(); ++i) {
+        if (tags[i] == tag)
+            return;
+    }
+    tags.push_back(tag);
+}
+
+/// 本地标签（规则 + 词典）—— 无任何命中时用原始扩展名兜底，保证非空
+/// （设计 5.4：最差情况"标签 = 扩展名"，绝不让标签为空）。
+std::vector<std::string> localTagsWithFallback(const LocalTagEngine& engine,
+                                              const std::string& text,
+                                              const std::string& fileName)
+{
+    std::vector<std::string> tags = engine.tagFile(text, fileName);
+    if (tags.empty()) {
+        const size_t dot = fileName.find_last_of('.');
+        pushUniqueTag(tags, (dot != std::string::npos && dot + 1 < fileName.size())
+                                ? fileName.substr(dot + 1)
+                                : std::string("unknown"));
+    }
+    return tags;
+}
+
+} // namespace
 
 Ikernel *tcpkernel::m_kernel=new tcpkernel;
 
@@ -39,6 +86,8 @@ tcpkernel::tcpkernel() {
     m_aiPreview = new AIFilePreview();
     m_aiSearch = new AISearchSvc(m_sql);
     m_aiTag = new AITagService();
+    // 本地检索引擎：检索层持有内存倒排索引的非拥有指针（索引随 tcpkernel 生命周期存在）
+    m_localSearch = new LocalSearchEngine(&m_localIndex);
     m_httpPort = 0;  // 在 boolopen() 中从 server.conf 读取
     m_szSystemPath[0] = '\0';  // 在 boolopen() 中从 server.conf 读取
 }
@@ -72,6 +121,7 @@ tcpkernel::~tcpkernel()
     delete m_aiPreview; m_aiPreview = nullptr;
     delete m_aiSearch;   m_aiSearch = nullptr;
     delete m_aiTag;      m_aiTag = nullptr;
+    delete m_localSearch; m_localSearch = nullptr;   // 非拥有 m_localIndex（成员，自动析构）
 }
 
 bool tcpkernel::boolopen()
@@ -271,10 +321,70 @@ bool tcpkernel::boolopen()
 
     m_httpServer->start(httpPort, m_storage);
 
+    // --- 本地检索引擎：加载标签词典（无 Key 时标签仍由规则 + 词典产出，非空） ---
+    loadLocalTagDict();
+
     // --- 初始化 APIBridge（从环境变量读取 OPENAI_API_KEY） ---
     APIBridge::instance();  // 单例初始化——记录 AI 是否启用
 
     return true;
+}
+
+// ============================================================================
+// 本地检索引擎——索引维护与词典部署（Task 8 / Task 9）
+// ============================================================================
+
+// 内容级增量索引：上传完成 / 预览读取到内容时调用。
+//   - 只索引"可提取文本"的文件（TxtTextExtractor::canHandle）：二进制/未支持格式不入索引，
+//     这类文件的检索由文件名 LIKE 兜底（设计 §5.2 解析器可插拔 + §5.4 保证非空）；
+//   - addDocument 幂等（内部先移除旧项再重建），因此重复索引同一文件安全；
+//   - 仅由 DbWorker 线程调用（m_localIndex 不加锁）。
+void tcpkernel::indexLocalContent(int64_t fileId, const std::string& fileName, const std::string& rawContent)
+{
+    if (fileId <= 0 || rawContent.empty())
+        return;
+
+    TxtTextExtractor extractor;
+    if (!extractor.canHandle(fileName))
+        return;
+
+    const std::string text = extractor.extract(rawContent);   // 剥 BOM + 截断到 64KB
+    if (text.empty())
+        return;
+
+    m_localIndex.addDocument(fileId, text);
+}
+
+// 词典部署路径策略（Task 9 遗留决策）——按优先级尝试，全部失败只告警，不崩溃：
+//   ① exe 同目录 / 当前工作目录的 tag_dict.json（部署形态：随 server 一起发布）
+//   ② 编译期源码绝对路径 LOCAL_TAG_DICT_PATH（开发形态：从任意工作目录启动都能命中）
+//   ③ exe 目录下的源码相对回退 ../ai/local/tag_dict.json（在 0323server/release/ 内直接运行）
+// 全部失败 → 退化为纯扩展名规则（tagFile 对已知扩展名仍返回非空标签）。
+void tcpkernel::loadLocalTagDict()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+
+    std::vector<std::string> candidates;
+    candidates.push_back((appDir + "/tag_dict.json").toStdString());
+    candidates.push_back("tag_dict.json");
+#ifdef LOCAL_TAG_DICT_PATH
+    candidates.push_back(std::string(LOCAL_TAG_DICT_PATH));
+#endif
+    candidates.push_back((appDir + "/../ai/local/tag_dict.json").toStdString());
+
+    for (size_t i = 0; i < candidates.size(); ++i) {
+        if (m_localTag.loadDict(candidates[i])) {
+            printf("[LocalTagEngine] tag dictionary loaded: %s (%zu tags)\n",
+                   candidates[i].c_str(), m_localTag.dictSize());
+            fflush(stdout);   // 启动诊断：重定向到日志文件时立即可见（否则要等进程退出才落盘）
+            return;
+        }
+    }
+
+    fprintf(stderr, "[LocalTagEngine] WARNING: tag_dict.json not found (tried %zu paths) — "
+                    "degraded to extension-only rules (tags remain non-empty)\n",
+            candidates.size());
+    fflush(stderr);
 }
 
 void tcpkernel::close()
@@ -958,7 +1068,7 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                     p->m_pfile = nullptr;
                 }
 
-                // --- 上传完成后触发异步 AI 索引与打标签 ---
+                // --- 上传完成后触发本地索引/标签（主路径）与 LLM 增强（可选） ---
                 int64_t completedFileId = p->m_fileid;
                 int64_t completedUserId = p->m_userid;
                 m_dbWorker.enqueue([this, completedFileId, completedUserId]() {
@@ -967,20 +1077,42 @@ void tcpkernel::uploadfileblockrq(SOCKET sock, const char *szbuf, int nlen)
                         content = m_storage->readBlock(completedFileId, 0);
                     }
                     if (!content.empty()) {
+                        // 取文件名（本地索引判定可提取性 + 打标签共用同一次查询）
+                        std::list<std::string> nameRows;
+                        m_sql->query("SELECT f_name FROM files WHERE f_id=?",
+                                     {completedFileId}, 1, nameRows);
+                        const std::string fileName = nameRows.empty() ? "unknown" : nameRows.front();
+
+                        // --- 本地内容级增量索引（Task 8）：内容来源与下方 m_aiSearch->indexFile 完全一致 ---
+                        indexLocalContent(completedFileId, fileName, content);
+
+                        // --- 本地规则/词典标签（Task 9 主路径）：无 Key 也立即有标签 ---
+                        const std::vector<std::string> localTags = localTagsWithFallback(
+                            m_localTag, TxtTextExtractor().extract(content), fileName);
+                        m_sql->execute("DELETE FROM file_tags WHERE f_id=?", {completedFileId});
+                        for (size_t i = 0; i < localTags.size(); ++i) {
+                            std::string safeTag = localTags[i].size() > 99
+                                                      ? localTags[i].substr(0, 99) : localTags[i];
+                            m_sql->execute("INSERT IGNORE INTO file_tags(f_id, tag) VALUES(?,?)",
+                                          {completedFileId, safeTag});
+                            m_sql->execute(
+                                "INSERT INTO tag_pool(tag, status, use_count, last_used_at) "
+                                "VALUES(?,'pending',1,NOW()) ON DUPLICATE KEY UPDATE "
+                                "use_count=use_count+1, last_used_at=NOW(), "
+                                "status=IF(use_count >= 3, 'active', status)",
+                                {safeTag});
+                        }
+
+                        // --- LLM 增强（可选；AI 关闭时不再调用，避免写入 "WeiFenLei" 占位标签）---
                         if (m_aiSearch) {
                             m_aiSearch->indexFile(completedFileId, content);
                         }
-                        if (m_aiTag) {
-                            std::list<std::string> nameRows;
-                            m_sql->query("SELECT f_name FROM files WHERE f_id=?",
-                                         {completedFileId}, 1, nameRows);
-                            std::string fileName = nameRows.empty() ? "unknown" : nameRows.front();
+                        if (APIBridge::instance()->isEnabled() && m_aiTag) {
                             m_aiTag->tagFileAsync(completedFileId, content, fileName,
                                 [this, completedFileId](const TagResult& tagResult) {
                                     if (tagResult.success) {
                                         m_dbWorker.enqueue([this, completedFileId, tagResult]() {
-                                            m_sql->execute("DELETE FROM file_tags WHERE f_id=?",
-                                                           {completedFileId});
+                                            // 与上传时落库的本地标签合并（不再 DELETE，保留规则/词典标签）
                                             for (const auto& tag : tagResult.tags) {
                                                 std::string safeTag = tag.size() > 99 ? tag.substr(0, 99) : tag;
                                                 m_sql->execute("INSERT IGNORE INTO file_tags(f_id, tag) VALUES(?,?)",
@@ -1650,28 +1782,58 @@ void tcpkernel::aipreviewrq(SOCKET sock, const char* szbuf, int nlen) {
                 if (rawLen > 0) memcpy(rs.m_szRawContent, content.c_str(), rawLen);
                 rs.m_szAIError[0] = '\0';  // 无错误，由缓存提供
             } else if (!content.empty()) {
-                // 缓存未命中 → 调用 AI → 写入缓存
-                auto result = m_aiPreview->preview(req.m_fileID, content, fileName);
-                rs.m_szResult = result.success ? 0 : 2;
-                strncpy(rs.m_szSummary, result.summary.c_str(), sizeof(rs.m_szSummary) - 1);
-                strncpy(rs.m_szKeywords, result.keywords.c_str(), sizeof(rs.m_szKeywords) - 1);
-                strncpy(rs.m_szKeySentences, result.keySentences.c_str(), sizeof(rs.m_szKeySentences) - 1);
-                strncpy(rs.m_szFileType, result.fileType.c_str(), sizeof(rs.m_szFileType) - 1);
+                // ---- 主路径：本地统计式预览（关键词 / 关键句 / 首段摘要；无 Key 也完整可用）----
+                const LocalPreviewResult localR =
+                    LocalPreviewEngine::preview(TxtTextExtractor().extract(content), fileName);
+
+                rs.m_szResult = 0;                       // 本地预览成功（不再依赖 AI 可用性）
+                strncpy(rs.m_szSummary, localR.summary.c_str(), sizeof(rs.m_szSummary) - 1);
+                strncpy(rs.m_szKeywords, localR.keywords.c_str(), sizeof(rs.m_szKeywords) - 1);
+                strncpy(rs.m_szKeySentences, localR.keySentences.c_str(), sizeof(rs.m_szKeySentences) - 1);
+                strncpy(rs.m_szFileType, localR.fileType.c_str(), sizeof(rs.m_szFileType) - 1);
                 strncpy(rs.m_szFileName, fileName.c_str(), sizeof(rs.m_szFileName) - 1);
                 int rawLen = std::min(static_cast<int>(content.size()), MAXFILECONTENT * 2);
                 rs.m_nRawContentLen = rawLen;
                 if (rawLen > 0) memcpy(rs.m_szRawContent, content.c_str(), rawLen);
-                strncpy(rs.m_szAIError, result.errorMsg.c_str(), sizeof(rs.m_szAIError) - 1);
+                rs.m_szAIError[0] = '\0';   // AI 关闭或未失败时为空串（不再出现 "AI disabled" 文案）
 
-                // AI 成功时写入缓存（回退或出错时跳过）
-                if (result.success && result.errorMsg.empty()) {
+                // 顺带把已读到的内容补进本地倒排索引：存量文件在被预览后即可内容级检索（幂等）
+                indexLocalContent(req.m_fileID, fileName, content);
+
+                // ---- AI 增强（可选）：真正成功才覆盖本地结果；失败/降级保留本地结果 ----
+                // 注意：AIFilePreview::preview 在"AI 调用失败"时也会返回 success=true +
+                // 自己那套降级值（summary=前 200 字符、keywords=文件名、fileType="unknown"、
+                // errorMsg=失败原因）。本地引擎结果明显更优，因此这里把 errorMsg 非空视为
+                // "AI 未真正生效"，只记入 m_szAIError，绝不覆盖、也不写缓存（写缓存会永久
+                // 固化降级值，且缓存命中后不再重试 AI）。
+                bool aiApplied = false;
+                if (APIBridge::instance()->isEnabled() && m_aiPreview) {
+                    auto result = m_aiPreview->preview(req.m_fileID, content, fileName);
+                    const bool aiReallyOk = result.success && result.errorMsg.empty();
+                    if (aiReallyOk) {
+                        if (!result.summary.empty())
+                            strncpy(rs.m_szSummary, result.summary.c_str(), sizeof(rs.m_szSummary) - 1);
+                        if (!result.keywords.empty())
+                            strncpy(rs.m_szKeywords, result.keywords.c_str(), sizeof(rs.m_szKeywords) - 1);
+                        if (!result.keySentences.empty())
+                            strncpy(rs.m_szKeySentences, result.keySentences.c_str(), sizeof(rs.m_szKeySentences) - 1);
+                        aiApplied = true;
+                    } else if (!result.errorMsg.empty()) {
+                        // AI 失败：本地结果照常返回，仅把原因写入 m_szAIError 供客户端提示
+                        strncpy(rs.m_szAIError, result.errorMsg.c_str(), sizeof(rs.m_szAIError) - 1);
+                    }
+                }
+
+                // ---- 缓存写入（沿用现有 SQL 结构）：无 AI 时写本地结果，AI 真正成功时写增强结果 ----
+                // AI 开启但调用失败 → 不写缓存：本地计算代价极低，保留"下次重试 AI"的机会。
+                if (!APIBridge::instance()->isEnabled() || aiApplied) {
                     m_sql->execute(
                         "INSERT INTO ai_previews(f_id, summary, keywords, key_sentences, file_type) "
                         "VALUES(?,?,?,?,?) ON DUPLICATE KEY UPDATE "
                         "summary=VALUES(summary), keywords=VALUES(keywords), key_sentences=VALUES(key_sentences), file_type=VALUES(file_type)",
                         {static_cast<int64_t>(req.m_fileID),
-                         result.summary, result.keywords,
-                         result.keySentences, result.fileType});
+                         std::string(rs.m_szSummary), std::string(rs.m_szKeywords),
+                         std::string(rs.m_szKeySentences), std::string(rs.m_szFileType)});
                 }
             } else {
                 rs.m_szResult = 1;
@@ -1693,7 +1855,7 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
     m_dbWorker.enqueue([this, sock, req]() {
         STRU_AISEARCHRS rs;
         rs.m_nResultNum = 0;
-        rs.m_szResult = 1; // 默认值：回退
+        rs.m_szResult = 1; // 默认值：无任何命中（命中即置 0）
 
         std::string query(req.m_szQuery);
 
@@ -1707,25 +1869,85 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
             return out;
         };
 
-        // F9-2 修复：合并 AI 与 LIKE 结果（而非简单 OR）。
-        // 始终执行 LIKE 查询，并按 fileId 与 AI 结果去重。
-        bool aiHasResults = false;
-        if (APIBridge::instance()->isEnabled()) {
+        // 结果归并：三层结果按优先级追加，按 fileId 去重，最多 MAXSIZE 条。
+        //   ① AI embedding 精排（可选增强，enabled 时优先）
+        //   ② 本地内容级 TF-IDF 检索（**主路径**：倒排召回 + 余弦排序，无 Key 也完整可用）
+        //   ③ 文件名 LIKE（兜底：存量未索引文件、二进制文件、中文子串直接命中文件名）
+        std::set<int64_t> seenFileIds;
+        auto appendResult = [&rs, &seenFileIds](int64_t fid, const std::string& name,
+                                                int64_t size, const std::string& reason,
+                                                const std::string& sha256) {
+            if (fid <= 0 || rs.m_nResultNum >= MAXSIZE) return;
+            if (!seenFileIds.insert(fid).second) return;   // 已在更高优先级层出现 → 跳过
+            AI_SEARCH_RESULT& slot = rs.m_aryResults[rs.m_nResultNum];
+            memset(&slot, 0, sizeof(slot));
+            slot.m_fileInfo.m_fileID = fid;
+            strncpy(slot.m_fileInfo.m_szFileName, name.c_str(), MAXSIZE - 1);
+            slot.m_fileInfo.m_filesize = size;
+            strncpy(slot.m_szMatchReason, reason.c_str(), sizeof(slot.m_szMatchReason) - 1);
+            if (!sha256.empty())
+                strncpy(slot.m_szFileSHA256, sha256.c_str(), sizeof(slot.m_szFileSHA256) - 1);
+            rs.m_nResultNum++;
+        };
+
+        // ---- 层 ①：AI embedding 精排（AI 不可用/失败/无结果都不影响下面的本地主路径）----
+        if (APIBridge::instance()->isEnabled() && m_aiSearch) {
             auto aiRs = m_aiSearch->search(query, req.m_userId);
             if (aiRs.m_szResult == 0 && aiRs.m_nResultNum > 0) {
-                rs = aiRs;
-                aiHasResults = true;
+                for (int i = 0; i < aiRs.m_nResultNum; ++i) {
+                    const AI_SEARCH_RESULT& a = aiRs.m_aryResults[i];
+                    appendResult(a.m_fileInfo.m_fileID, a.m_fileInfo.m_szFileName,
+                                 a.m_fileInfo.m_filesize, a.m_szMatchReason,
+                                 std::string(a.m_szFileSHA256));
+                }
             }
         }
 
-        // LIKE 回退——始终执行，与 AI 结果合并（F9-2 修复）
-        {
-            // 记录 AI 结果中已出现的文件 ID 用于去重
-            std::set<int64_t> seenFileIds;
-            for (int i = 0; i < rs.m_nResultNum; i++) {
-                seenFileIds.insert(rs.m_aryResults[i].m_fileInfo.m_fileID);
-            }
+        // ---- 层 ②：本地内容级 TF-IDF 检索（主路径）----
+        // 本地索引是"全库内容索引"，因此召回后必须用 user_file 过滤到该用户可见的文件，
+        // 并同时取出文件名/大小/SHA-256 供回包（一次 SQL 完成过滤 + 取元数据）。
+        if (m_localSearch) {
+            const std::vector<LocalSearchEngine::Hit> hits =
+                m_localSearch->search(query, kLocalSearchTopN);
+            if (!hits.empty()) {
+                std::map<int64_t, SearchFileMeta> meta;
+                std::string sql = "SELECT f.f_id, f.f_name, f.f_size, f.f_sha256 FROM files f "
+                                  "JOIN user_file uf ON f.f_id=uf.f_id "
+                                  "WHERE uf.u_id=? AND f.f_id IN (";
+                std::vector<SqlValue> params;
+                params.push_back(static_cast<int64_t>(req.m_userId));
+                for (size_t i = 0; i < hits.size(); ++i) {
+                    if (i) sql += ",";
+                    sql += "?";
+                    params.push_back(hits[i].fileId);   // 参数化：fileId 不进 SQL 文本
+                }
+                sql += ")";
 
+                std::list<std::string> rows;
+                m_sql->query(sql.c_str(), params, 4, rows);
+                while (rows.size() >= 4) {
+                    SearchFileMeta m;
+                    m.fileId = atoll(rows.front().c_str()); rows.pop_front();
+                    m.name   = rows.front();                rows.pop_front();
+                    m.size   = atoll(rows.front().c_str()); rows.pop_front();
+                    m.sha256 = rows.front();                rows.pop_front();
+                    meta[m.fileId] = m;
+                }
+
+                // 按余弦分数降序输出（hits 本身已排序）
+                for (size_t i = 0; i < hits.size(); ++i) {
+                    std::map<int64_t, SearchFileMeta>::const_iterator it = meta.find(hits[i].fileId);
+                    if (it == meta.end()) continue;     // 不属于该用户 / 文件已删除
+                    char reason[64];
+                    snprintf(reason, sizeof(reason), "内容匹配度 %.0f%%", hits[i].score * 100.0);
+                    appendResult(it->second.fileId, it->second.name, it->second.size,
+                                 reason, it->second.sha256);
+                }
+            }
+        }
+
+        // ---- 层 ③：文件名 LIKE 兜底（保持 F9-2 合并结构，始终执行）----
+        {
             std::list<std::string> lst;
             std::string escapedQuery = escapeLike(query);
             std::string likeQuery = "%" + escapedQuery + "%";
@@ -1734,24 +1956,16 @@ void tcpkernel::aisearchrq(SOCKET sock, const char* szbuf, int nlen) {
                 "JOIN user_file uf ON f.f_id=uf.f_id WHERE uf.u_id=? AND f.f_name LIKE ? LIMIT 45",
                 {static_cast<int64_t>(req.m_userId), likeQuery}, 3, lst);
 
-            int idx = rs.m_nResultNum;
-            while (lst.size() > 0 && idx < MAXSIZE) {
+            while (lst.size() >= 3) {
                 int64_t fid = atoll(lst.front().c_str()); lst.pop_front();
                 std::string fname = lst.front(); lst.pop_front();
                 int64_t fsize = atoll(lst.front().c_str()); lst.pop_front();
-
-                // F9-2：跳过 AI 结果中已有的重复项
-                if (seenFileIds.count(fid)) continue;
-
-                rs.m_aryResults[idx].m_fileInfo.m_fileID = fid;
-                strncpy(rs.m_aryResults[idx].m_fileInfo.m_szFileName, fname.c_str(), MAXSIZE - 1);
-                rs.m_aryResults[idx].m_fileInfo.m_filesize = fsize;
-                memset(rs.m_aryResults[idx].m_szFileSHA256, 0, sizeof(rs.m_aryResults[idx].m_szFileSHA256));
-                strcpy(rs.m_aryResults[idx].m_szMatchReason, "filename match");
-                idx++;
+                appendResult(fid, fname, fsize, "filename match", std::string());
             }
-            rs.m_nResultNum = idx;
         }
+
+        // 有命中即为成功（本地主路径的结果也是"完整功能"，不再是降级）
+        if (rs.m_nResultNum > 0) rs.m_szResult = 0;
 
         auto packet = ProtocolFactory::serializeAISearchRS(rs);
         m_server->sendData(sock, (const char*)packet.data(), (int)packet.size());
@@ -1801,40 +2015,22 @@ void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
             if (m_storage) {
                 content = m_storage->readBlock(req.m_fileID, 0);
             }
-            if (content.empty()) {
-                // 回退：按扩展名打标签
-                auto pos = fileName.rfind('.');
-                std::string ext = (pos != std::string::npos) ? fileName.substr(pos + 1) : "unknown";
-                if (rs.m_nTagNum < 15) {
-                    strncpy(rs.m_szTags[rs.m_nTagNum], ext.c_str(), MAXSIZE - 1);
-                    rs.m_nTagNum++;
-                }
-            } else {
+
+            // ---- 主路径：本地规则 + 词典标签（无 Key 也非空：扩展名规则 / 原始扩展名兜底）----
+            std::vector<std::string> tagList = localTagsWithFallback(
+                m_localTag, TxtTextExtractor().extract(content), fileName);
+
+            if (!content.empty() && APIBridge::instance()->isEnabled() && m_aiTag) {
+                // ---- AI 增强（可选）：LLM 标签与规则标签合并去重（规则在前，AI 追加）；
+                //      AI 不可用/失败 → 纯规则结果照常返回 ----
                 auto tagResult = m_aiTag->tagFile(req.m_fileID, content, fileName);
                 if (tagResult.success) {
-                    // --- 将标签持久化到 file_tags 与 tag_pool ---
-                    // 清除该文件的旧标签
-                    m_sql->execute("DELETE FROM file_tags WHERE f_id=?",
-                                   {static_cast<int64_t>(req.m_fileID)});
-                    for (const auto& tag : tagResult.tags) {
-                        // 限制标签长度
-                        std::string safeTag = tag.size() > 99 ? tag.substr(0, 99) : tag;
-                        // 插入 file_tag
-                        m_sql->execute(
-                            "INSERT IGNORE INTO file_tags(f_id, tag) VALUES(?,?)",
-                            {static_cast<int64_t>(req.m_fileID), safeTag});
-                        // 更新 tag_pool：use_count 加一，达到阈值后升级为 active
-                        m_sql->execute(
-                            "INSERT INTO tag_pool(tag, status, use_count, last_used_at) "
-                            "VALUES(?,'pending',1,NOW()) ON DUPLICATE KEY UPDATE "
-                            "use_count=use_count+1, last_used_at=NOW(), "
-                            "status=IF(use_count >= 3, 'active', status)",
-                            {safeTag});
-
-                        if (rs.m_nTagNum < 15) {
-                            strncpy(rs.m_szTags[rs.m_nTagNum], safeTag.c_str(), MAXSIZE - 1);
-                            rs.m_nTagNum++;
-                        }
+                    for (size_t i = 0; i < tagResult.tags.size(); ++i) {
+                        // AITagService::tagFile 在"AI 未启用或 chat 失败"时会返回 success=true
+                        // + 占位标签 "WeiFenLei"（未分类）：主路径已是规则引擎，不再并入占位标签
+                        if (tagResult.tags[i] == "WeiFenLei")
+                            continue;
+                        pushUniqueTag(tagList, tagResult.tags[i]);
                     }
                     for (const auto& newTag : tagResult.newTagSuggestions) {
                         if (rs.m_nNewTagSuggestions < 5) {
@@ -1842,6 +2038,34 @@ void tcpkernel::aitagrq(SOCKET sock, const char* szbuf, int nlen) {
                             rs.m_nNewTagSuggestions++;
                         }
                     }
+                }
+            }
+
+            // ---- 落库（沿用现有 SQL：file_tags / tag_pool）+ 填充响应 ----
+            const bool persist = !content.empty();   // 无内容路径保持旧行为：只回包不落库
+            if (persist) {
+                // 清除该文件的旧标签
+                m_sql->execute("DELETE FROM file_tags WHERE f_id=?",
+                               {static_cast<int64_t>(req.m_fileID)});
+            }
+            for (size_t i = 0; i < tagList.size(); ++i) {
+                // 限制标签长度
+                std::string safeTag = tagList[i].size() > 99 ? tagList[i].substr(0, 99) : tagList[i];
+                if (persist) {
+                    m_sql->execute(
+                        "INSERT IGNORE INTO file_tags(f_id, tag) VALUES(?,?)",
+                        {static_cast<int64_t>(req.m_fileID), safeTag});
+                    // 更新 tag_pool：use_count 加一，达到阈值后升级为 active
+                    m_sql->execute(
+                        "INSERT INTO tag_pool(tag, status, use_count, last_used_at) "
+                        "VALUES(?,'pending',1,NOW()) ON DUPLICATE KEY UPDATE "
+                        "use_count=use_count+1, last_used_at=NOW(), "
+                        "status=IF(use_count >= 3, 'active', status)",
+                        {safeTag});
+                }
+                if (rs.m_nTagNum < 15) {
+                    strncpy(rs.m_szTags[rs.m_nTagNum], safeTag.c_str(), MAXSIZE - 1);
+                    rs.m_nTagNum++;
                 }
             }
         }

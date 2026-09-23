@@ -13,8 +13,13 @@
 # 由 ai/ai.pri 末尾 include (用 $$PWD 锚定路径, 不依赖 qmake 的相对路径基准)。
 #
 # 注意: tag_dict.json 是运行期文件 (LocalTagEngine::loadDict 的默认词典)。
-#   当前由使用方自行决定部署位置 (server 侧随可执行文件放到工作目录);
-#   单测工程在 unit_tests.pro 里用 QMAKE_POST_LINK 拷贝到运行目录。
+#   部署策略 (2026-09-23 Task 9 定):
+#     ① exe 同目录 / 当前工作目录 —— 由 0323server.pro 的 QMAKE_POST_LINK
+#        构建期拷贝到 $$OUT_PWD/release (单测工程 unit_tests.pro 同样拷贝到其运行目录);
+#     ② 编译期源码绝对路径 LOCAL_TAG_DICT_PATH (0323server.pro / unit_tests.pro 定义);
+#     ③ exe 目录下的 ../ai/local/tag_dict.json 源码相对回退;
+#     ④ 全部失败 → 仅告警并退化为纯扩展名规则 (不崩溃, 已知扩展名仍有非空标签)。
+#   路径探测与告警在 tcpkernel::loadLocalTagDict()。
 # ============================================================================
 
 HEADERS += \
