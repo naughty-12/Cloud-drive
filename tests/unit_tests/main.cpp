@@ -1,10 +1,10 @@
 /**
  * @file main.cpp
- * @brief Qt Test 入口 — 依次执行六个测试套件。
+ * @brief Qt Test 入口 — 依次执行八个测试套件。
  *
  * 用自定义 main 而不是 QTEST_MAIN, 是因为一个可执行文件里
  * 注册了多个测试类 (BinaryStream / CryptoUtil / ProtocolFactory /
- * StreamAccess / LocalTokenize / TxtExtractor)。
+ * StreamAccess / LocalTokenize / TxtExtractor / LocalIndex / LocalSearch)。
  *
  * 注意: argv 会透传给每个 qExec 调用, 因此命令行参数被解释为"测试函数名",
  * 不能用来只跑某个测试类; 要看单个套件的输出请搜索 "Start testing of TestXXX"。
@@ -15,6 +15,8 @@
 
 #include "tst_binarystream.h"
 #include "tst_crypto.h"
+#include "tst_localindex.h"
+#include "tst_localsearch.h"
 #include "tst_localtokenize.h"
 #include "tst_protocolfactory.h"
 #include "tst_streamaccess.h"
@@ -43,6 +45,12 @@ int main(int argc, char* argv[])
 
     TestTxtExtractor t6;
     rc |= QTest::qExec(&t6, argc, argv);
+
+    TestLocalIndex t7;
+    rc |= QTest::qExec(&t7, argc, argv);
+
+    TestLocalSearch t8;
+    rc |= QTest::qExec(&t8, argc, argv);
 
     return rc;
 }
