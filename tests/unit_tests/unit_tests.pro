@@ -12,6 +12,7 @@
 #   - LocalSearchEngine  (0323server/ai/local — TF-IDF 加权 + 余弦相似度排序)
 #   - LocalPreviewEngine (0323server/ai/local — 统计式预览: 关键词/关键句/首段摘要)
 #   - LocalTagEngine     (0323server/ai/local — 扩展名规则 + 词典命中标签)
+#   - aijson             (0323server/ai — 轻量 JSON 解析: 紧凑/格式化 JSON 空白容忍度)
 #
 # 构建方式 (推荐走 scripts/run-tests.bat):
 #   cd shared/libprotocol && qmake "CONFIG+=release" "CONFIG-=debug" && mingw32-make
@@ -31,6 +32,7 @@ TEMPLATE = app
 INCLUDEPATH += ../../shared/libprotocol
 INCLUDEPATH += ../../shared/crypto
 INCLUDEPATH += ../../0323server/http
+INCLUDEPATH += ../../0323server/ai
 INCLUDEPATH += ../../0323server/ai/local
 
 SOURCES += \
@@ -45,6 +47,7 @@ SOURCES += \
     tst_localsearch.cpp \
     tst_localpreview.cpp \
     tst_localtag.cpp \
+    tst_aijson.cpp \
     ../../0323server/http/StreamAccessController.cpp \
     ../../0323server/ai/local/LocalTokenize.cpp \
     ../../0323server/ai/local/LocalTextIndex.cpp \
@@ -64,7 +67,8 @@ HEADERS += \
     tst_localindex.h \
     tst_localsearch.h \
     tst_localpreview.h \
-    tst_localtag.h
+    tst_localtag.h \
+    tst_aijson.h
 
 # --- LocalTagEngine 的词典 tag_dict.json -------------------------------------
 # 词典随代码存放在 0323server/ai/local/, 但运行时的工作目录不一定是那里, 故构建后

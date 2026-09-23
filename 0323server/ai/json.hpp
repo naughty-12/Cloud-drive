@@ -111,7 +111,11 @@ class Parser {
             v.arrVal.push_back(parseValue());
             skipWS();
             while (*p == ',') {
-                p++; v.arrVal.push_back(parseValue()); skipWS();
+                p++;
+                skipWS();                       // 逗号后可能是空白 (与对象分支对称;
+                                                // parseValue 本身也会 skip, 此处显式对齐)
+                v.arrVal.push_back(parseValue());
+                skipWS();
             }
         }
         expect(']');
@@ -129,6 +133,10 @@ class Parser {
             skipWS();
             while (*p == ',') {
                 p++;
+                skipWS();                       // 修复 2026-09-23: parseString() 内部是
+                                                // expect('"') (不跳空白), 缺此次 skipWS 会让
+                                                // 「逗号后带空格/换行」的格式化 JSON 抛
+                                                // Expected char —— 只吃得下紧凑 JSON。
                 auto k2 = parseString();
                 skipWS(); expect(':');
                 v.objVal[k2.strVal] = parseValue();

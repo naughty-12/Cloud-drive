@@ -1,11 +1,11 @@
 /**
  * @file main.cpp
- * @brief Qt Test 入口 — 依次执行十个测试套件。
+ * @brief Qt Test 入口 — 依次执行十一个测试套件。
  *
  * 用自定义 main 而不是 QTEST_MAIN, 是因为一个可执行文件里
  * 注册了多个测试类 (BinaryStream / CryptoUtil / ProtocolFactory /
  * StreamAccess / LocalTokenize / TxtExtractor / LocalIndex / LocalSearch /
- * LocalPreview / LocalTag)。
+ * LocalPreview / LocalTag / AiJson)。
  *
  * 注意: argv 会透传给每个 qExec 调用, 因此命令行参数被解释为"测试函数名",
  * 不能用来只跑某个测试类; 要看单个套件的输出请搜索 "Start testing of TestXXX"。
@@ -14,6 +14,7 @@
 #include <QCoreApplication>
 #include <QtTest/QtTest>
 
+#include "tst_aijson.h"
 #include "tst_binarystream.h"
 #include "tst_crypto.h"
 #include "tst_localindex.h"
@@ -60,6 +61,9 @@ int main(int argc, char* argv[])
 
     TestLocalTag t10;
     rc |= QTest::qExec(&t10, argc, argv);
+
+    TestAiJson t11;
+    rc |= QTest::qExec(&t11, argc, argv);
 
     return rc;
 }

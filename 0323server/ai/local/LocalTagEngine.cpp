@@ -31,43 +31,6 @@ std::string asciiLower(const std::string& s)
     return out;
 }
 
-/// 去除字符串字面量之外的空白字符。
-///
-/// 为什么需要它: 项目内置的 aijson (ai/json.hpp) 在 parseObject 的 `p++; parseString()`
-/// 处**不跳过逗号后的空白**, 只吃紧凑 JSON —— 词典文件写成缩进/带空格的常规 JSON 会抛
-/// "Expected char"。这里先把空白规范化掉, 让 tag_dict.json 能正常缩进书写, 同时不影响
-/// 字符串内容 (引号内 (含转义) 的字节原样保留)。
-std::string stripWhitespaceOutsideStrings(const std::string& json)
-{
-    std::string out;
-    out.reserve(json.size());
-
-    bool inString = false;
-    bool escaped = false;
-    for (size_t i = 0; i < json.size(); ++i) {
-        const char ch = json[i];
-        if (inString) {
-            out += ch;
-            if (escaped)
-                escaped = false;
-            else if (ch == '\\')
-                escaped = true;
-            else if (ch == '"')
-                inString = false;
-            continue;
-        }
-        if (ch == '"') {
-            inString = true;
-            out += ch;
-            continue;
-        }
-        if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
-            continue;
-        out += ch;
-    }
-    return out;
-}
-
 /// 子串匹配 (needle 必须是已小写化文本; 空 needle 一律视为不命中)。
 bool containsNoCase(const std::string& loweredHaystack, const std::string& loweredNeedle)
 {
@@ -142,7 +105,10 @@ bool LocalTagEngine::loadDict(const std::string& jsonPath)
 
     std::ostringstream buffer;
     buffer << in.rdbuf();
-    const std::string text = stripWhitespaceOutsideStrings(buffer.str());
+    // 紧凑与"格式化"(缩进/逗号后空格/换行) 的 JSON 都由 aijson 直接解析 ——
+    // 2026-09-23 修复了 ai/json.hpp parseObject 逗号分支漏 skipWS 的缺陷后, 这里不再需要
+    // 事先剥离空白 (原先的 stripWhitespaceOutsideStrings 绕过函数已删除, 只留一处真相)。
+    const std::string text = buffer.str();
 
     // 先解析到临时表, 全部成功才替换 —— 失败时保留原有词典 (调用方无状态可回滚)
     std::map<std::string, std::vector<std::string> > parsed;
