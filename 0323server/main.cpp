@@ -14,7 +14,11 @@ int main(int argc, char *argv[])
     }
     else
     {
-        printf("server err");
+        // Task 12 补丁 B：启动失败必须退出，不得静默假活。
+        // 此前只打印错误就进入事件循环：进程存活、端口 LISTENING 但不处理任何请求，
+        // 运维与测试会误判为"服务正常"。
+        printf("server err\n");
+        return 1;
     }
 
 

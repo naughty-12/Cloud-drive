@@ -1,10 +1,12 @@
-#include "MySqlWrapper.h"
+﻿#include "MySqlWrapper.h"
 #include <cstring>
 #include <cstdlib>
+#include <cstdio>
 
 MySqlWrapper::MySqlWrapper()
     : m_sock(nullptr)
     , m_connected(false)
+    , m_lastErrNo(0)
 {
 }
 
@@ -19,6 +21,13 @@ bool MySqlWrapper::connect(const char* host, const char* user,
     m_sock = mysql_init(nullptr);
     if (!m_sock) return false;
 
+    // Task 12: 连接/读/写超时（秒）——防止锁等待或 MySQL 半死时 DbWorker 线程无限挂起
+    // （DbWorker 为全服务单点，一旦挂住所有数据库任务停摆）。必须在 mysql_real_connect 之前设置。
+    unsigned int timeoutSec = 5;
+    mysql_options(m_sock, MYSQL_OPT_CONNECT_TIMEOUT, &timeoutSec);
+    mysql_options(m_sock, MYSQL_OPT_READ_TIMEOUT,    &timeoutSec);
+    mysql_options(m_sock, MYSQL_OPT_WRITE_TIMEOUT,   &timeoutSec);
+
     mysql_set_character_set(m_sock, "utf8");
 
     if (!mysql_real_connect(m_sock, host, user, pass, db, 0, nullptr, 0)) {
@@ -28,6 +37,13 @@ bool MySqlWrapper::connect(const char* host, const char* user,
     }
 
     m_connected = true;
+
+    // Task 12 补丁 A：保存连接参数，供断线自愈时重连使用
+    m_host = host ? host : "";
+    m_user = user ? user : "";
+    m_pass = pass ? pass : "";
+    m_db   = db   ? db   : "";
+    m_lastErrNo = 0;
     return true;
 }
 
@@ -37,6 +53,26 @@ void MySqlWrapper::disconnect() {
         m_sock = nullptr;
     }
     m_connected = false;
+}
+
+// ─── Task 12 补丁 A：连接自愈 ─────────────────────────────────────────────
+// 客户端读超时（errno 2013）/ 服务端消失（errno 2006）会让句柄报废：
+// 之后所有语句都在客户端侧直接失败。这里判定报废 → 重连一次 → 重放语句一次。
+bool MySqlWrapper::isConnectionLost(int errNo) {
+    return errNo == 2006   // CR_SERVER_GONE_ERROR
+        || errNo == 2013;  // CR_SERVER_LOST
+}
+
+bool MySqlWrapper::tryReconnect() {
+    if (!hasSavedParams()) return false;   // 从未成功连接过，无参数可恢复
+
+    disconnect();                          // 关闭报废句柄
+    if (!connect(m_host.c_str(), m_user.c_str(), m_pass.c_str(), m_db.c_str())) {
+        fprintf(stderr, "[MySqlWrapper] reconnect FAILED (%s@%s/%s)\n",
+                m_user.c_str(), m_host.c_str(), m_db.c_str());
+        return false;
+    }
+    return true;
 }
 
 // ─── 辅助结构体：在 execute 生命周期内持有绑定缓冲区 ───────
@@ -110,12 +146,32 @@ static BindBuf bindParams(MYSQL_STMT* stmt,
 // ─── execute ────────────────────────────────────────────────────────────
 bool MySqlWrapper::execute(const char* sql,
                            const std::vector<SqlValue>& params) {
+    if (executeOnce(sql, params)) return true;
+
+    // Task 12 补丁 A：连接报废 → 重连 + 重试一次
+    const int lostErr = m_lastErrNo;   // 必须在重连前快照：connect() 会重置 m_lastErrNo
+    if (isConnectionLost(lostErr) && tryReconnect()) {
+        const bool ok = executeOnce(sql, params);
+        fprintf(stderr, "[MySqlWrapper] connection lost (errno=%d), reconnected & retried once "
+                        "→ retry=%s\n", lostErr, ok ? "ok" : "failed");
+        return ok;
+    }
+    return false;
+}
+
+// 单次尝试：原有实现（不含自愈）
+bool MySqlWrapper::executeOnce(const char* sql,
+                               const std::vector<SqlValue>& params) {
     if (!m_connected || !m_sock) return false;
 
     MYSQL_STMT* stmt = mysql_stmt_init(m_sock);
-    if (!stmt) return false;
+    if (!stmt) {
+        m_lastErrNo = mysql_errno(m_sock);
+        return false;
+    }
 
     if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(strlen(sql))) != 0) {
+        m_lastErrNo = mysql_errno(m_sock);
         mysql_stmt_close(stmt);
         return false;
     }
@@ -124,6 +180,7 @@ bool MySqlWrapper::execute(const char* sql,
     BindBuf buf = bindParams(stmt, params);
 
     if (mysql_stmt_execute(stmt) != 0) {
+        m_lastErrNo = mysql_errno(m_sock);
         mysql_stmt_close(stmt);
         return false;
     }
@@ -137,12 +194,37 @@ bool MySqlWrapper::query(const char* sql,
                          const std::vector<SqlValue>& params,
                          int nColumn,
                          std::list<std::string>& results) {
+    if (queryOnce(sql, params, nColumn, results)) return true;
+
+    // Task 12 补丁 A：连接报废 → 重连 + 重试一次
+    // queryOnce 的所有 false 分支都发生在任何结果行被追加之前
+    // （prepare/execute/store_result/bind_result 失败、或 nColumn<=0 的提前返回），
+    // 因此重放不会把重复行写进 results。
+    const int lostErr = m_lastErrNo;   // 必须在重连前快照：connect() 会重置 m_lastErrNo
+    if (isConnectionLost(lostErr) && tryReconnect()) {
+        const bool ok = queryOnce(sql, params, nColumn, results);
+        fprintf(stderr, "[MySqlWrapper] connection lost (errno=%d), reconnected & retried once "
+                        "→ retry=%s\n", lostErr, ok ? "ok" : "failed");
+        return ok;
+    }
+    return false;
+}
+
+// 单次尝试：原有实现（不含自愈）
+bool MySqlWrapper::queryOnce(const char* sql,
+                             const std::vector<SqlValue>& params,
+                             int nColumn,
+                             std::list<std::string>& results) {
     if (!m_connected || !m_sock) return false;
 
     MYSQL_STMT* stmt = mysql_stmt_init(m_sock);
-    if (!stmt) return false;
+    if (!stmt) {
+        m_lastErrNo = mysql_errno(m_sock);
+        return false;
+    }
 
     if (mysql_stmt_prepare(stmt, sql, static_cast<unsigned long>(strlen(sql))) != 0) {
+        m_lastErrNo = mysql_errno(m_sock);
         mysql_stmt_close(stmt);
         return false;
     }
@@ -151,11 +233,13 @@ bool MySqlWrapper::query(const char* sql,
     BindBuf buf = bindParams(stmt, params);
 
     if (mysql_stmt_execute(stmt) != 0) {
+        m_lastErrNo = mysql_errno(m_sock);
         mysql_stmt_close(stmt);
         return false;
     }
 
     if (mysql_stmt_store_result(stmt) != 0) {
+        m_lastErrNo = mysql_errno(m_sock);
         mysql_stmt_free_result(stmt);
         mysql_stmt_close(stmt);
         return false;
@@ -185,6 +269,7 @@ bool MySqlWrapper::query(const char* sql,
 
     if (mysql_stmt_bind_result(stmt, resultBind) != 0) {
         // 绑定失败——返回前清理所有堆分配
+        m_lastErrNo = mysql_errno(m_sock);
         for (int i = 0; i < nColumn; i++) {
             delete[] buffers[i];
         }
@@ -224,8 +309,25 @@ bool MySqlWrapper::query(const char* sql,
 
 // ─── executeRaw ─────────────────────────────────────────────────────────
 bool MySqlWrapper::executeRaw(const char* sql) {
+    if (executeRawOnce(sql)) return true;
+
+    // Task 12 补丁 A：连接报废 → 重连 + 重试一次（begin/commit/rollback 经此自动受益）
+    const int lostErr = m_lastErrNo;   // 必须在重连前快照：connect() 会重置 m_lastErrNo
+    if (isConnectionLost(lostErr) && tryReconnect()) {
+        const bool ok = executeRawOnce(sql);
+        fprintf(stderr, "[MySqlWrapper] connection lost (errno=%d), reconnected & retried once "
+                        "→ retry=%s\n", lostErr, ok ? "ok" : "failed");
+        return ok;
+    }
+    return false;
+}
+
+// 单次尝试：原有实现（不含自愈）
+bool MySqlWrapper::executeRawOnce(const char* sql) {
     if (!m_connected || !m_sock) return false;
-    return mysql_query(m_sock, sql) == 0;
+    if (mysql_query(m_sock, sql) == 0) return true;
+    m_lastErrNo = mysql_errno(m_sock);
+    return false;
 }
 
 // ─── 事务支持（F8-2 修复）────────────────────────────────────
