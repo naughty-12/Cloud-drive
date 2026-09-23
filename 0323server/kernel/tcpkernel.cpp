@@ -278,6 +278,13 @@ bool tcpkernel::boolopen()
     }
 
     // --- DbWorker：启动异步数据库线程（预热后再启动，避免连接冲突） ---
+    // 注意顺序约束：标签词典必须在 DbWorker 启动之前加载完成。
+    //   词典加载会在主线程上替换 m_localTag 内部的 std::map；而 aitagrq / 上传完成路径
+    //   会在 DbWorker 线程上遍历该 map（localTagsWithFallback → tagFile）。若词典加载
+    //   晚于 DbWorker 启动（原实现放在 boolopen 末尾），启动期到达的请求就可能读到
+    //   正在被 swap 的 map → 撕裂指针 → 访问违例（"内存不能为 read"）。
+    //   放在此处：DbWorker 尚未启动（请求只是入队不执行）、客户端也刚连上，窗口为零。
+    loadLocalTagDict();
     m_dbWorker.start();
 
     // --- 集群 NodeManager ---
@@ -320,9 +327,6 @@ bool tcpkernel::boolopen()
            streamTokenTtl, streamSessionIdle, httpSendTimeoutMs);
 
     m_httpServer->start(httpPort, m_storage);
-
-    // --- 本地检索引擎：加载标签词典（无 Key 时标签仍由规则 + 词典产出，非空） ---
-    loadLocalTagDict();
 
     // --- 初始化 APIBridge（从环境变量读取 OPENAI_API_KEY） ---
     APIBridge::instance();  // 单例初始化——记录 AI 是否启用
